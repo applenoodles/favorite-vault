@@ -25,6 +25,8 @@ interface FavoriteItem {
   contentLength?: number;
   extractionMethod?: string;
   canonicalUrl?: string;
+  summary?: string;
+  category?: string;
 }
 
 interface DraftState {
@@ -44,6 +46,19 @@ interface DraftState {
   contentLength: number;
   extractionMethod: string;
   canonicalUrl: string;
+  summary: string;
+  category: string;
+}
+
+interface ExtensionPayload {
+  url?: string;
+  title?: string;
+  text?: string;
+  selectedText?: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+  authorName?: string;
 }
 
 interface MetadataResponse {
@@ -101,6 +116,8 @@ const EMPTY_DRAFT: DraftState = {
   contentLength: 0,
   extractionMethod: '',
   canonicalUrl: '',
+  summary: '',
+  category: '',
 };
 
 const metadataErrorLabels: Record<string, string> = {
@@ -166,6 +183,87 @@ function parseTags(input: string) {
     .filter((tag, index, arr) => arr.indexOf(tag) === index);
 }
 
+function splitSentences(text: string) {
+  return text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[。！？.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function generateSummary(text: string, fallback = '') {
+  const source = text.trim() || fallback.trim();
+  if (!source) return '';
+  const sentences = splitSentences(source);
+  const summary = (sentences.length > 0 ? sentences.slice(0, 2).join(' ') : source).slice(0, 260);
+  return summary.trim();
+}
+
+function inferCategory(input: string, platform: Platform) {
+  const text = input.toLowerCase();
+  const rules: Array<[string, RegExp]> = [
+    ['AI / 工具', /ai|人工智慧|llm|gpt|claude|模型|prompt|自動化|工具|workflow/],
+    ['程式 / 開發', /react|typescript|javascript|python|api|github|cloudflare|chrome extension|前端|後端|程式/],
+    ['影音 / 創作', /youtube|bilibili|影片|剪輯|音樂|動畫|podcast|創作/],
+    ['設計 / UI', /ui|ux|design|介面|設計|字體|排版|css|html/],
+    ['學習 / 知識', /教學|筆記|學習|研究|論文|課程|知識|百科|wiki/],
+    ['社群 / 貼文', /threads|instagram|facebook|貼文|社群|ig|fb/],
+  ];
+
+  for (const [label, pattern] of rules) {
+    if (pattern.test(text)) return label;
+  }
+
+  if (platform === 'youtube' || platform === 'bilibili') return '影音 / 創作';
+  if (platform === 'instagram' || platform === 'threads' || platform === 'facebook') return '社群 / 貼文';
+  return '未分類';
+}
+
+function suggestTags(text: string, platform: Platform) {
+  const tags = new Set<string>();
+  if (platform !== 'other') tags.add(PLATFORM_LABEL[platform]);
+  const keywordTags: Array<[string, RegExp]> = [
+    ['AI', /ai|人工智慧|llm|gpt|claude|模型/],
+    ['工具', /tool|工具|workflow|自動化|extension/],
+    ['前端', /react|vite|css|html|typescript|javascript/],
+    ['設計', /ui|ux|design|設計|介面/],
+    ['學習', /教學|學習|課程|筆記|研究/],
+    ['影片', /youtube|bilibili|影片|video/],
+  ];
+  for (const [tag, pattern] of keywordTags) {
+    if (pattern.test(text.toLowerCase())) tags.add(tag);
+  }
+  return Array.from(tags).slice(0, 6);
+}
+
+function buildDraftFromPayload(payload: ExtensionPayload): DraftState {
+  const url = normalizeUrl(payload.url || extractFirstUrl(payload.text || '') || '');
+  const content = (payload.selectedText || payload.text || '').trim();
+  const platform = detectPlatform(url);
+  const title = (payload.title || '').trim();
+  const description = (payload.description || '').trim();
+  const haystack = [title, description, content, url].filter(Boolean).join('\n');
+  const tags = suggestTags(haystack, platform);
+
+  return {
+    ...EMPTY_DRAFT,
+    url,
+    title,
+    description,
+    imageUrl: payload.imageUrl || '',
+    siteName: payload.siteName || hostOf(url),
+    authorName: payload.authorName || '',
+    rawText: content,
+    contentText: content,
+    contentLength: content.length,
+    extractionMethod: content ? 'chrome_extension_dom' : '',
+    summary: generateSummary(content, description || title),
+    category: inferCategory(haystack, platform),
+    tags: tags.join(' '),
+    sourceAction: 'share-target',
+  };
+}
+
 function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null {
   if (!item.url) return null;
   const url = normalizeUrl(item.url);
@@ -191,6 +289,8 @@ function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null
     contentLength: item.contentLength,
     extractionMethod: item.extractionMethod,
     canonicalUrl: item.canonicalUrl,
+    summary: item.summary,
+    category: item.category,
   };
 }
 
@@ -304,15 +404,36 @@ export default function App() {
     if (!sharedUrl && !sharedTitle && !sharedText) return;
 
     const bestUrl = normalizeUrl(sharedUrl || extractFirstUrl(sharedText));
+    const content = [sharedTitle, sharedText].filter(Boolean).join('\n');
+    const platform = detectPlatform(bestUrl);
     setDraft({
       ...EMPTY_DRAFT,
       url: bestUrl,
       title: sharedTitle,
-      rawText: [sharedTitle, sharedText].filter(Boolean).join('\n'),
+      rawText: content,
+      contentText: content,
+      contentLength: content.length,
+      summary: generateSummary(content, sharedTitle),
+      category: inferCategory(content, platform),
+      tags: suggestTags(content, platform).join(' '),
       sourceAction: 'share-target',
     });
     setIsComposerOpen(true);
     window.history.replaceState({}, document.title, window.location.pathname);
+  }, []);
+
+  useEffect(() => {
+    const handleExtensionPayload = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      if (event.data?.type !== 'favorite-vault-extension-payload') return;
+      const payload = event.data.payload as ExtensionPayload;
+      setDraft(buildDraftFromPayload(payload));
+      setIsComposerOpen(true);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    };
+
+    window.addEventListener('message', handleExtensionPayload);
+    return () => window.removeEventListener('message', handleExtensionPayload);
   }, []);
 
   const platformCounts = useMemo(() => {
@@ -360,6 +481,8 @@ export default function App() {
           item.note,
           item.rawText,
           item.description,
+          item.summary,
+          item.category,
           item.contentText,
           item.siteName,
           item.authorName,
@@ -379,7 +502,7 @@ export default function App() {
     setIsComposerOpen(true);
   }, []);
 
-  function updateDraft(field: keyof DraftState, value: string) {
+  function updateDraft(field: keyof DraftState, value: string | number) {
     setDraft((current) => ({ ...current, [field]: value }));
   }
 
@@ -405,6 +528,9 @@ export default function App() {
         contentLength: metadata.contentLength || current.contentLength,
         extractionMethod: metadata.extractionMethod || current.extractionMethod,
         canonicalUrl: metadata.canonicalUrl || current.canonicalUrl,
+        summary: current.summary || generateSummary(metadata.contentText || metadata.description || '', metadata.title || ''),
+        category: current.category || inferCategory([metadata.title, metadata.description, metadata.contentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl)),
+        tags: current.tags || suggestTags([metadata.title, metadata.description, metadata.contentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl)).join(' '),
         metadataError: '',
       }));
     } catch (error) {
@@ -435,6 +561,8 @@ export default function App() {
             contentLength: metadata.contentLength || candidate.contentLength,
             extractionMethod: metadata.extractionMethod || candidate.extractionMethod,
             canonicalUrl: metadata.canonicalUrl || candidate.canonicalUrl,
+            summary: candidate.summary || generateSummary(metadata.contentText || metadata.description || '', metadata.title || candidate.title),
+            category: candidate.category || inferCategory([metadata.title, metadata.description, metadata.contentText, candidate.url].filter(Boolean).join('\n'), candidate.platform),
             metadataFetchedAt: new Date().toISOString(),
             metadataError: '',
           };
@@ -458,6 +586,8 @@ export default function App() {
     if (!normalizedUrl) return;
 
     const fallbackContentText = draft.contentText.trim() || draft.rawText.trim();
+    const summary = draft.summary.trim() || generateSummary(fallbackContentText, draft.description || draft.title);
+    const category = draft.category.trim() || inferCategory([draft.title, draft.description, fallbackContentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl));
 
     const item: FavoriteItem = {
       id: createId(),
@@ -480,6 +610,8 @@ export default function App() {
       contentLength: draft.contentLength || fallbackContentText.length || undefined,
       extractionMethod: draft.extractionMethod || undefined,
       canonicalUrl: draft.canonicalUrl || undefined,
+      summary: summary || undefined,
+      category: category || undefined,
     };
 
     setItems((current) => [item, ...current]);
@@ -782,6 +914,13 @@ function ItemCard({
 
         {item.description && <p className="card__desc">{item.description}</p>}
 
+        {(item.summary || item.category) && (
+          <div className="card__summary">
+            {item.category && <span className="category-pill">{item.category}</span>}
+            {item.summary && <p>{item.summary}</p>}
+          </div>
+        )}
+
         {item.contentText && (
           <details className="card__content">
             <summary>
@@ -875,7 +1014,7 @@ function AddItemModal({
 }: {
   draft: DraftState;
   isParsing: boolean;
-  onUpdate: (field: keyof DraftState, value: string) => void;
+  onUpdate: (field: keyof DraftState, value: string | number) => void;
   onParse: () => Promise<void>;
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -956,8 +1095,9 @@ function AddItemModal({
                 <span className="preview__title">{draft.title || '（無標題）'}</span>
                 {draft.description && <span className="preview__desc">{draft.description}</span>}
                 {draft.contentText && (
-                  <span className="preview__content">已抽取內文 {draft.contentLength ? `${draft.contentLength.toLocaleString()} 字` : ''}</span>
+                  <span className="preview__content">已取得內容 {draft.contentLength ? `${draft.contentLength.toLocaleString()} 字` : ''}</span>
                 )}
+                {draft.category && <span className="preview__content">分類：{draft.category}</span>}
                 <span className="preview__url">{hostOf(previewUrl)}</span>
                 {draft.metadataError && <span className="preview__error">{draft.metadataError}</span>}
               </div>
@@ -977,16 +1117,58 @@ function AddItemModal({
             />
           </div>
 
-          <div className="field">
-            <label className="field__label" htmlFor="tags-input">
-              標籤
+          <div className="field field-grid">
+            <label>
+              <span className="field__label">分類</span>
+              <input
+                className="input"
+                placeholder="例：AI / 工具"
+                value={draft.category}
+                onChange={(event) => onUpdate('category', event.target.value)}
+              />
             </label>
-            <input
-              id="tags-input"
-              className="input"
-              placeholder="用空白或逗號分隔，例：AI 工具 影片"
-              value={draft.tags}
-              onChange={(event) => onUpdate('tags', event.target.value)}
+            <label>
+              <span className="field__label">標籤</span>
+              <input
+                className="input"
+                placeholder="用空白或逗號分隔，例：AI 工具 影片"
+                value={draft.tags}
+                onChange={(event) => onUpdate('tags', event.target.value)}
+              />
+            </label>
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor="summary-input">
+              摘要
+            </label>
+            <textarea
+              id="summary-input"
+              className="input textarea"
+              rows={3}
+              placeholder="可自動產生，也可以手動改。"
+              value={draft.summary}
+              onChange={(event) => onUpdate('summary', event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor="content-input">
+              內容正文 / 手動補內容
+            </label>
+            <textarea
+              id="content-input"
+              className="input textarea textarea--content"
+              rows={6}
+              placeholder="IG / Threads 抓不到時，把貼文內容複製貼上；一樣會被摘要、分類、搜尋。"
+              value={draft.contentText}
+              onChange={(event) => {
+                const value = event.target.value;
+                onUpdate('contentText', value);
+                onUpdate('contentLength', value.length);
+                if (!draft.summary.trim()) onUpdate('summary', generateSummary(value, draft.description || draft.title));
+                if (!draft.category.trim()) onUpdate('category', inferCategory(value, detectPlatform(draft.url)));
+              }}
             />
           </div>
 

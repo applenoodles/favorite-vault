@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Favorite Vault Saver",
+  "version": "0.1.0",
+  "description": "Capture the current page into Favorite Vault.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Save to Favorite Vault"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["https://lting.dpdns.org/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://lting.dpdns.org/*"],
+      "js": ["vault-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

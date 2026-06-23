@@ -541,6 +541,34 @@ button:disabled {
   overflow: hidden;
 }
 
+.card__summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border: 1px solid rgba(181, 103, 58, 0.16);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+}
+
+.card__summary p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.category-pill {
+  width: fit-content;
+  color: var(--warn-ink);
+  background: #fff7ed;
+  border: 1px solid rgba(181, 103, 58, 0.2);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
 .card__note {
   margin: 0;
   font-size: 13px;
@@ -828,6 +856,18 @@ button:disabled {
   gap: var(--sp-2);
 }
 
+.field-grid {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: var(--sp-3);
+}
+
+.field-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
 .field__label {
   font-size: 12.5px;
   font-weight: 600;
@@ -878,6 +918,10 @@ button:disabled {
   resize: vertical;
   min-height: 72px;
   line-height: 1.55;
+}
+
+.textarea--content {
+  min-height: 132px;
 }
 
 /* ---------- Preview ---------- */
@@ -1174,7 +1218,9 @@ label:focus-visible {
     margin: var(--sp-2) auto 0;
   }
 
-  .field__url {
+  .field__url,
+  .field-grid {
+    grid-template-columns: 1fr;
     flex-direction: column;
   }
 

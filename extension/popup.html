@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Favorite Vault Saver</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f4ec;
+        --card: #fffdf8;
+        --ink: #3a352d;
+        --soft: #6b6358;
+        --line: #e4ddcd;
+        --accent: #b5673a;
+      }
+
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 14px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font: 600 19px/1.2 Georgia, "Times New Roman", serif;
+      }
+
+      p {
+        margin: 0 0 12px;
+        color: var(--soft);
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 10px;
+        padding: 11px 14px;
+        background: var(--accent);
+        color: #fffaf3;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+
+      .hint,
+      .status {
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+        color: var(--soft);
+        font-size: 12.5px;
+      }
+
+      .status {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Favorite Vault</h1>
+    <p>抓目前頁面的標題、網址、正文、選取文字與圖片，送進收藏庫。</p>
+    <button id="save-button" type="button">Save current page</button>
+    <div class="hint">IG / Threads 抓不到伺服器內容時，這個外掛會直接從你已登入的頁面讀 DOM。平台鎖門，我們從你自己房間進去，文明多了。</div>
+    <div id="status" class="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
