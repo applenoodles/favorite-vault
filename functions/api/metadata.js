@@ -34,6 +34,10 @@ export async function onRequestGet({ request }) {
     });
   }
 
+  if (isBilibiliUrl(validation.url)) {
+    return json({ ok: false, error: 'platform_fetch_failed', platform: 'bilibili' }, 502);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -195,6 +199,11 @@ function extractMetadata(html, baseUrl) {
     siteName: cleanText(siteName),
     author: cleanText(author),
   };
+}
+
+function isBilibiliUrl(url) {
+  const host = url.hostname.toLowerCase();
+  return host.includes('bilibili.com') || host.includes('b23.tv');
 }
 
 async function extractPlatformDataFromUrl(url) {

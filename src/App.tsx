@@ -112,6 +112,7 @@ const metadataErrorLabels: Record<string, string> = {
   timeout: '抓取逾時，對方網站慢得像行政流程。',
   fetch_error: '抓取時發生錯誤。',
   server_non_json: '解析服務回了非 JSON，通常是平台或 Cloudflare 中途炸了。',
+  platform_fetch_failed: '平台資料抓取失敗，這個站可能擋住伺服器請求。',
 };
 
 function createId() {
