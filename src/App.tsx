@@ -571,6 +571,37 @@ export default function App() {
                 {item.description && <p className="description-text">{item.description}</p>}
                 {item.note && <p className="note-text">{item.note}</p>}
                 {item.metadataError && <p className="error-text">解析失敗：{item.metadataError}</p>}
+                {(item.description || item.imageUrl || item.siteName || item.authorName || item.finalUrl || item.metadataFetchedAt) && (
+                  <details className="metadata-details">
+                    <summary>查看 metadata</summary>
+                    <dl>
+                      <div>
+                        <dt>title</dt>
+                        <dd>{item.title || '無'}</dd>
+                      </div>
+                      <div>
+                        <dt>description</dt>
+                        <dd>{item.description || '無'}</dd>
+                      </div>
+                      <div>
+                        <dt>siteName</dt>
+                        <dd>{item.siteName || '無'}</dd>
+                      </div>
+                      <div>
+                        <dt>author</dt>
+                        <dd>{item.authorName || '無'}</dd>
+                      </div>
+                      <div>
+                        <dt>image</dt>
+                        <dd>{item.imageUrl || '無'}</dd>
+                      </div>
+                      <div>
+                        <dt>finalUrl</dt>
+                        <dd>{item.finalUrl || item.url}</dd>
+                      </div>
+                    </dl>
+                  </details>
+                )}
                 {item.tags.length > 0 && (
                   <div className="item-tags">
                     {item.tags.map((tag) => (
@@ -636,7 +667,7 @@ export default function App() {
               />
             </label>
 
-            {(draft.description || draft.imageUrl || draft.siteName || draft.metadataError) && (
+            {(draft.description || draft.imageUrl || draft.siteName || draft.authorName || draft.finalUrl || draft.metadataError) && (
               <section className="metadata-preview">
                 {draft.imageUrl && <img src={draft.imageUrl} alt="" />}
                 <div>
@@ -644,6 +675,32 @@ export default function App() {
                   {draft.siteName && <p className="meta-text">{draft.siteName}</p>}
                   {draft.description && <p>{draft.description}</p>}
                   {draft.metadataError && <p className="error-text">{draft.metadataError}</p>}
+                  <dl className="metadata-preview-list">
+                    <div>
+                      <dt>title</dt>
+                      <dd>{draft.title || '無'}</dd>
+                    </div>
+                    <div>
+                      <dt>description</dt>
+                      <dd>{draft.description || '無'}</dd>
+                    </div>
+                    <div>
+                      <dt>siteName</dt>
+                      <dd>{draft.siteName || '無'}</dd>
+                    </div>
+                    <div>
+                      <dt>author</dt>
+                      <dd>{draft.authorName || '無'}</dd>
+                    </div>
+                    <div>
+                      <dt>image</dt>
+                      <dd>{draft.imageUrl || '無'}</dd>
+                    </div>
+                    <div>
+                      <dt>finalUrl</dt>
+                      <dd>{draft.finalUrl || draft.url}</dd>
+                    </div>
+                  </dl>
                 </div>
               </section>
             )}
