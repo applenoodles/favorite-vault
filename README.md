@@ -14,6 +14,7 @@
 - 平台統計
 - AI-ready profile 小摘要
 - Cloudflare D1 雲端同步，使用私人 vault key
+- LLM 批次整理包匯出 / 匯入，不需要內建 API key
 - JSON 匯出 / 匯入
 - 離線 fallback service worker
 
@@ -116,10 +117,24 @@ Quick setup:
 4. Redeploy
 5. Enter the same vault key on desktop and phone
 
+## LLM batch workflow
+
+Favorite Vault can export unresolved or weakly summarized items into a Markdown prompt:
+
+```txt
+favorite-vault-llm-batch-YYYY-MM-DD.md
+```
+
+Give that file to a capable LLM. It can open the URLs, inspect articles, replies, comments, and surrounding context, then return strict JSON with improved `summary`, `category`, and `tags`.
+
+Import the JSON back with **匯入 LLM 結果**. This updates local items and, if a vault key is active, syncs the updated items to D1.
+
+This avoids storing an API key in the app and lets the desktop LLM do the heavy crawling/reading when needed.
+
 ## 下一步建議
 
-1. 加 AI 摘要與自動標籤
-2. 加向量搜尋，讓 AI 能依收藏內容找相似素材
-3. 讓 Chrome extension 直接 POST 到雲端 API
-4. 加 LINE bot webhook
-5. 加真正登入 / invite key
+1. 加向量搜尋，讓 AI 能依收藏內容找相似素材
+2. 讓 Chrome extension 直接 POST 到雲端 API
+3. 加 LINE bot webhook
+4. 加真正登入 / invite key
+5. 加 LLM 結果差異預覽

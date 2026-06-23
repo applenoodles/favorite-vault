@@ -81,6 +81,16 @@ interface MetadataResponse {
   canonicalUrl?: string;
 }
 
+interface LlmBatchResultItem {
+  id: string;
+  title?: string;
+  description?: string;
+  summary?: string;
+  category?: string;
+  tags?: string[] | string;
+  note?: string;
+}
+
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -457,6 +467,92 @@ function downloadFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
+function needsLlmPass(item: FavoriteItem) {
+  return (
+    !item.summary ||
+    item.summary.length < 24 ||
+    !item.category ||
+    item.category === '未分類' ||
+    Boolean(item.metadataError) ||
+    ['instagram', 'threads', 'facebook'].includes(item.platform) ||
+    item.title === fallbackTitle(item.url)
+  );
+}
+
+function getLlmBatchCandidates(items: FavoriteItem[]) {
+  const candidates = items.filter(needsLlmPass);
+  return (candidates.length > 0 ? candidates : items).slice(0, 80);
+}
+
+function buildLlmBatchMarkdown(items: FavoriteItem[]) {
+  const batchItems = getLlmBatchCandidates(items).map((item) => ({
+    id: item.id,
+    url: item.finalUrl || item.url,
+    platform: PLATFORM_LABEL[item.platform],
+    title: item.title,
+    currentSummary: item.summary || '',
+    currentCategory: item.category || '',
+    currentTags: item.tags,
+    description: item.description || '',
+    siteName: item.siteName || '',
+    authorName: item.authorName || '',
+    note: item.note || '',
+    reason: needsLlmPass(item) ? 'needs_review' : 'included_for_context',
+  }));
+
+  return `# Favorite Vault LLM Batch
+
+你是一個私人收藏整理助理。請幫我整理下面的收藏項目，讓它們變成 AI 可以理解、可以搜尋、可以之後做個人化推薦的資料。
+
+你可以依每個 url 自行開啟連結、閱讀原文、留言、回覆串、相關文章或頁面脈絡。若連結無法開啟，就根據現有欄位整理。不要輸出長篇原文，不要塞 UI 垃圾文字，只保留摘要、分類、標籤與必要說明。
+
+請只輸出有效 JSON，不要 Markdown，不要解釋。格式如下：
+
+{
+  "items": [
+    {
+      "id": "原本的 id，必填，不可改",
+      "title": "可選，若原標題很爛才修",
+      "description": "可選，短描述",
+      "summary": "80 到 180 字，說清楚這筆收藏在講什麼、為什麼值得留下",
+      "category": "分類，例如 AI / 工具、社群 / 貼文、學習 / 知識、設計 / UI、影音 / 創作、生活 / 想法",
+      "tags": ["3 到 8 個短標籤"],
+      "note": "可選，若有觀察、洞察或提醒才填"
+    }
+  ]
+}
+
+## Items
+
+${JSON.stringify(batchItems, null, 2)}
+`;
+}
+
+function extractJsonText(input: string) {
+  const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  if (fenced) return fenced.trim();
+  const firstObject = input.indexOf('{');
+  const firstArray = input.indexOf('[');
+  const startCandidates = [firstObject, firstArray].filter((index) => index >= 0);
+  if (startCandidates.length === 0) return input.trim();
+  return input.slice(Math.min(...startCandidates)).trim();
+}
+
+function parseLlmBatchResults(raw: string): LlmBatchResultItem[] {
+  const parsed = JSON.parse(extractJsonText(raw)) as unknown;
+  const value = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' && parsed !== null && 'items' in parsed
+      ? (parsed as { items?: unknown }).items
+      : [];
+
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((item): item is LlmBatchResultItem => typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string')
+    .map((item) => item);
+}
+
 function metadataErrorText(error?: string) {
   if (!error) return '';
   return metadataErrorLabels[error] ?? error;
@@ -492,6 +588,7 @@ export default function App() {
   const [cloudStatus, setCloudStatus] = useState(vaultKey ? '雲端模式待同步' : '本機模式');
   const [isCloudLoading, setIsCloudLoading] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const llmImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     saveItems(items);
@@ -823,6 +920,75 @@ export default function App() {
     downloadFile(`favorite-vault-${now}.json`, JSON.stringify(items, null, 2), 'application/json');
   }
 
+  function exportLlmBatch() {
+    const now = new Date().toISOString().slice(0, 10);
+    const candidates = getLlmBatchCandidates(items);
+    if (candidates.length === 0) {
+      alert('目前沒有收藏可以丟給 LLM。先存點東西，不然模型只能整理空氣。');
+      return;
+    }
+    downloadFile(`favorite-vault-llm-batch-${now}.md`, buildLlmBatchMarkdown(items), 'text/markdown;charset=utf-8');
+  }
+
+  async function applyLlmResults(results: LlmBatchResultItem[]) {
+    if (results.length === 0) {
+      alert('沒有讀到 LLM 結果。請確認它回的是 JSON，別讓它又寫散文。');
+      return;
+    }
+
+    const resultById = new Map(results.map((item) => [item.id, item]));
+    const updatedItems: FavoriteItem[] = [];
+
+    setItems((current) =>
+      current.map((item) => {
+        const result = resultById.get(item.id);
+        if (!result) return item;
+
+        const updated: FavoriteItem = {
+          ...item,
+          title: result.title?.trim() || item.title,
+          description: result.description?.trim() || item.description,
+          summary: result.summary?.trim() || item.summary,
+          category: result.category?.trim() || item.category,
+          tags: Array.isArray(result.tags) ? result.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : result.tags ? parseTags(result.tags) : item.tags,
+          note: result.note?.trim() || item.note,
+          metadataError: result.summary ? undefined : item.metadataError,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedItems.push(updated);
+        return updated;
+      }),
+    );
+
+    if (vaultKey.trim()) {
+      try {
+        for (const item of updatedItems) {
+          await upsertCloudItem(vaultKey.trim(), item);
+        }
+        setCloudStatus(`已匯入 LLM 結果並同步 ${updatedItems.length} 筆`);
+      } catch (error) {
+        setCloudStatus(`LLM 結果已匯入本機，但雲端同步失敗：${metadataErrorText((error as Error).message)}`);
+      }
+    }
+  }
+
+  function handleLlmImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        void applyLlmResults(parseLlmBatchResults(String(reader.result)));
+      } catch {
+        alert('匯入失敗：LLM 回傳不是有效 JSON。');
+      } finally {
+        event.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  }
+
   function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -877,8 +1043,11 @@ export default function App() {
           counts={platformCounts}
           onExport={exportJson}
           onImportClick={() => importInputRef.current?.click()}
+          onLlmExport={exportLlmBatch}
+          onLlmImportClick={() => llmImportInputRef.current?.click()}
         />
         <input ref={importInputRef} className="hidden-input" type="file" accept="application/json,.json" onChange={handleImportFile} />
+        <input ref={llmImportInputRef} className="hidden-input" type="file" accept="application/json,.json,.md,.txt,text/markdown,text/plain" onChange={handleLlmImportFile} />
 
         {filteredItems.length === 0 ? (
           <EmptyState hasItems={items.length > 0} onAdd={openComposer} />
@@ -1057,6 +1226,8 @@ function Toolbar({
   counts,
   onExport,
   onImportClick,
+  onLlmExport,
+  onLlmImportClick,
 }: {
   query: string;
   onQuery: (value: string) => void;
@@ -1065,6 +1236,8 @@ function Toolbar({
   counts: Record<Platform, number>;
   onExport: () => void;
   onImportClick: () => void;
+  onLlmExport: () => void;
+  onLlmImportClick: () => void;
 }) {
   return (
     <div className="toolbar">
@@ -1101,6 +1274,12 @@ function Toolbar({
       </div>
 
       <div className="toolbar__io">
+        <button className="btn btn--quiet" type="button" onClick={onLlmExport}>
+          匯出 LLM 包
+        </button>
+        <button className="btn btn--quiet" type="button" onClick={onLlmImportClick}>
+          匯入 LLM 結果
+        </button>
         <button className="btn btn--quiet" type="button" onClick={onImportClick}>
           匯入 JSON
         </button>
