@@ -183,19 +183,69 @@ function parseTags(input: string) {
     .filter((tag, index, arr) => arr.indexOf(tag) === index);
 }
 
+function cleanSummarySource(text: string) {
+  const boilerplate = [
+    '為你推薦',
+    '新串文',
+    '搜尋',
+    '訊息',
+    '動態',
+    '個人檔案',
+    '洞察報告',
+    '已儲存',
+    '動態消息',
+    '編輯',
+    '追蹤中',
+    '顯示更多',
+    '更多',
+    '有什麼新鮮事？',
+    '發佈',
+    '熱門',
+    '查看動態',
+    '回覆',
+    '部分回覆已隱藏。',
+    '查看全部',
+    '附帶原始貼文的回覆內容',
+    '原始貼文',
+  ];
+
+  let cleaned = text.replace(/\r/g, '\n');
+  for (const word of boilerplate) {
+    cleaned = cleaned.split(word).join('\n');
+  }
+
+  cleaned = cleaned
+    .replace(/(\d+[,.]?\d*\s*萬?)(?=(\d+[,.]?\d*\s*萬?){1,})/g, '\n')
+    .replace(/([\w.]{2,32})(\d+\s*(分鐘|小時|天|週|月)|剛才)/g, '\n$1 $2\n')
+    .replace(/#([\p{L}\p{N}_]+)/gu, ' #$1')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((line) => !/^\d+[,.]?\d*\s*萬?$/.test(line))
+    .filter((line) => !/^\d+\s*(分鐘|小時|天|週|月)$/.test(line))
+    .filter((line) => !/^(串文|次瀏覽|讚|分享|收藏)$/.test(line))
+    .filter((line) => line.length > 8 || /[。！？!?]/.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return cleaned;
+}
+
 function splitSentences(text: string) {
-  return text
+  return cleanSummarySource(text)
     .replace(/\s+/g, ' ')
     .split(/(?<=[。！？.!?])\s+/)
     .map((sentence) => sentence.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((sentence) => sentence.length > 12);
 }
 
 function generateSummary(text: string, fallback = '') {
-  const source = text.trim() || fallback.trim();
+  const source = cleanSummarySource(text).trim() || cleanSummarySource(fallback).trim();
   if (!source) return '';
   const sentences = splitSentences(source);
-  const summary = (sentences.length > 0 ? sentences.slice(0, 2).join(' ') : source).slice(0, 260);
+  const summary = (sentences.length > 0 ? sentences.slice(0, 3).join(' ') : source).slice(0, 360);
   return summary.trim();
 }
 
@@ -254,8 +304,8 @@ function buildDraftFromPayload(payload: ExtensionPayload): DraftState {
     siteName: payload.siteName || hostOf(url),
     authorName: payload.authorName || '',
     rawText: content,
-    contentText: content,
-    contentLength: content.length,
+    contentText: cleanSummarySource(content),
+    contentLength: cleanSummarySource(content).length,
     extractionMethod: content ? 'chrome_extension_dom' : '',
     summary: generateSummary(content, description || title),
     category: inferCategory(haystack, platform),
@@ -585,9 +635,9 @@ export default function App() {
     const normalizedUrl = normalizeUrl(draft.url || extractFirstUrl(draft.rawText));
     if (!normalizedUrl) return;
 
-    const fallbackContentText = draft.contentText.trim() || draft.rawText.trim();
-    const summary = draft.summary.trim() || generateSummary(fallbackContentText, draft.description || draft.title);
-    const category = draft.category.trim() || inferCategory([draft.title, draft.description, fallbackContentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl));
+    const summarySource = draft.contentText.trim() || draft.rawText.trim() || draft.description.trim();
+    const summary = draft.summary.trim() || generateSummary(summarySource, draft.description || draft.title);
+    const category = draft.category.trim() || inferCategory([draft.title, draft.description, summary, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl));
 
     const item: FavoriteItem = {
       id: createId(),
@@ -598,16 +648,16 @@ export default function App() {
       platform: detectPlatform(normalizedUrl),
       sourceAction: draft.sourceAction,
       createdAt: new Date().toISOString(),
-      rawText: draft.rawText.trim() || undefined,
+      rawText: undefined,
       description: draft.description.trim() || undefined,
       imageUrl: draft.imageUrl.trim() || undefined,
       siteName: draft.siteName.trim() || hostOf(draft.finalUrl || normalizedUrl),
       authorName: draft.authorName.trim() || undefined,
       finalUrl: draft.finalUrl.trim() || undefined,
-      metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName || draft.contentText ? new Date().toISOString() : undefined,
+      metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName || summary ? new Date().toISOString() : undefined,
       metadataError: draft.metadataError || undefined,
-      contentText: fallbackContentText || undefined,
-      contentLength: draft.contentLength || fallbackContentText.length || undefined,
+      contentText: undefined,
+      contentLength: undefined,
       extractionMethod: draft.extractionMethod || undefined,
       canonicalUrl: draft.canonicalUrl || undefined,
       summary: summary || undefined,
@@ -1154,20 +1204,21 @@ function AddItemModal({
 
           <div className="field">
             <label className="field__label" htmlFor="content-input">
-              內容正文 / 手動補內容
+              摘要材料 / 手動補內容
             </label>
             <textarea
               id="content-input"
               className="input textarea textarea--content"
               rows={6}
-              placeholder="IG / Threads 抓不到時，把貼文內容複製貼上；一樣會被摘要、分類、搜尋。"
+              placeholder="IG / Threads 抓不到時，把貼文內容複製貼上；它只用來產生摘要、分類、標籤，存檔不保留整坨原文。"
               value={draft.contentText}
               onChange={(event) => {
                 const value = event.target.value;
-                onUpdate('contentText', value);
-                onUpdate('contentLength', value.length);
-                if (!draft.summary.trim()) onUpdate('summary', generateSummary(value, draft.description || draft.title));
-                if (!draft.category.trim()) onUpdate('category', inferCategory(value, detectPlatform(draft.url)));
+                const cleaned = cleanSummarySource(value);
+                onUpdate('contentText', cleaned);
+                onUpdate('contentLength', cleaned.length);
+                onUpdate('summary', generateSummary(cleaned, draft.description || draft.title));
+                if (!draft.category.trim()) onUpdate('category', inferCategory(cleaned, detectPlatform(draft.url)));
               }}
             />
           </div>

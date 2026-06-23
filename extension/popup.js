@@ -22,6 +22,7 @@ button.addEventListener('click', async () => {
       ...result,
       capturedAt: new Date().toISOString(),
       source: 'chrome-extension',
+      summaryOnly: true,
     };
 
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -48,10 +49,9 @@ function captureCurrentPage(maxTextLength) {
   const selectedText = String(window.getSelection?.() || '').trim();
   const articleText = readableTextFrom(document.querySelector('article'));
   const mainText = readableTextFrom(document.querySelector('main'));
+  const socialText = captureSocialText();
   const bodyText = readableTextFrom(clone);
-  const text = [selectedText, articleText, mainText, bodyText]
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)[0] || '';
+  const text = selectedText || socialText || articleText || mainText || bodyText;
 
   const title = meta('property', 'og:title') || meta('name', 'twitter:title') || document.title || '';
   const description = meta('property', 'og:description') || meta('name', 'twitter:description') || meta('name', 'description') || '';
@@ -69,6 +69,18 @@ function captureCurrentPage(maxTextLength) {
     selectedText: selectedText.slice(0, maxTextLength),
     text: cleanReadable(text).slice(0, maxTextLength),
   };
+
+  function captureSocialText() {
+    const host = location.hostname.toLowerCase();
+    if (!host.includes('threads') && !host.includes('instagram') && !host.includes('facebook')) return '';
+
+    const articles = Array.from(document.querySelectorAll('article'))
+      .map((node) => readableTextFrom(node))
+      .filter((value) => value.length > 30)
+      .slice(0, 3);
+
+    return articles.join('\n\n');
+  }
 
   function readableTextFrom(root) {
     if (!root) return '';
