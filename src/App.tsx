@@ -13,6 +13,13 @@ interface FavoriteItem {
   sourceAction: SourceAction;
   createdAt: string;
   rawText?: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+  authorName?: string;
+  finalUrl?: string;
+  metadataFetchedAt?: string;
+  metadataError?: string;
 }
 
 interface DraftState {
@@ -22,6 +29,26 @@ interface DraftState {
   tags: string;
   rawText: string;
   sourceAction: SourceAction;
+  description: string;
+  imageUrl: string;
+  siteName: string;
+  authorName: string;
+  finalUrl: string;
+  metadataError: string;
+}
+
+interface MetadataResponse {
+  ok: boolean;
+  error?: string;
+  inputUrl?: string;
+  finalUrl?: string;
+  status?: number;
+  title?: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
+  author?: string;
+  limited?: boolean;
 }
 
 type BeforeInstallPromptEvent = Event & {
@@ -29,7 +56,8 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
-const STORAGE_KEY = 'favorite-vault-items-v1';
+const STORAGE_KEY = 'favorite-vault-items-v2';
+const LEGACY_STORAGE_KEY = 'favorite-vault-items-v1';
 const EMPTY_DRAFT: DraftState = {
   url: '',
   title: '',
@@ -37,6 +65,12 @@ const EMPTY_DRAFT: DraftState = {
   tags: '',
   rawText: '',
   sourceAction: 'manual',
+  description: '',
+  imageUrl: '',
+  siteName: '',
+  authorName: '',
+  finalUrl: '',
+  metadataError: '',
 };
 
 const platformLabels: Record<Platform, string> = {
@@ -46,6 +80,16 @@ const platformLabels: Record<Platform, string> = {
   facebook: 'Facebook',
   bilibili: 'Bilibili',
   other: '其他',
+};
+
+const metadataErrorLabels: Record<string, string> = {
+  missing_url: '沒有網址，這就像叫外送但不給地址。',
+  invalid_url: '網址格式不對。',
+  unsupported_protocol: '只支援 http / https。',
+  blocked_host: '這個網址被安全規則擋下來。',
+  fetch_failed: '抓取失敗，對方網站可能擋機器人或需要登入。',
+  timeout: '抓取逾時，對方網站慢得像行政流程。',
+  fetch_error: '抓取時發生錯誤。',
 };
 
 function createId() {
@@ -100,7 +144,7 @@ function parseTags(input: string) {
 
 function loadItems(): FavoriteItem[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as FavoriteItem[];
     return Array.isArray(parsed) ? parsed : [];
@@ -136,6 +180,26 @@ function downloadFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
+function metadataErrorText(error?: string) {
+  if (!error) return '';
+  return metadataErrorLabels[error] ?? error;
+}
+
+function isRealTitle(title: string, url: string) {
+  return title.trim() && title !== fallbackTitle(url);
+}
+
+async function requestMetadata(url: string): Promise<MetadataResponse> {
+  const response = await fetch(`/api/metadata?url=${encodeURIComponent(url)}`);
+  const data = (await response.json()) as MetadataResponse;
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `metadata_http_${response.status}`);
+  }
+
+  return data;
+}
+
 export default function App() {
   const [items, setItems] = useState<FavoriteItem[]>(() => loadItems());
   const [draft, setDraft] = useState<DraftState>(EMPTY_DRAFT);
@@ -143,6 +207,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [platformFilter, setPlatformFilter] = useState<Platform | 'all'>('all');
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isMetadataLoading, setIsMetadataLoading] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -169,10 +234,9 @@ export default function App() {
 
     const bestUrl = normalizeUrl(sharedUrl || extractFirstUrl(sharedText));
     setDraft({
+      ...EMPTY_DRAFT,
       url: bestUrl,
       title: sharedTitle,
-      note: '',
-      tags: '',
       rawText: sharedText,
       sourceAction: 'share-target',
     });
@@ -194,6 +258,32 @@ export default function App() {
     );
   }, [items]);
 
+  const aiSeed = useMemo(() => {
+    const recentItems = items.slice(0, 20);
+    const tagCounts = new Map<string, number>();
+    const platformCounts = new Map<Platform, number>();
+
+    for (const item of recentItems) {
+      platformCounts.set(item.platform, (platformCounts.get(item.platform) ?? 0) + 1);
+      for (const tag of item.tags) {
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      }
+    }
+
+    const topTags = Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([tag]) => `#${tag}`);
+
+    const topPlatform = Array.from(platformCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    return {
+      topTags,
+      topPlatform: topPlatform ? platformLabels[topPlatform] : '',
+      metadataCount: items.filter((item) => item.description || item.imageUrl || item.siteName).length,
+    };
+  }, [items]);
+
   const filteredItems = useMemo(() => {
     const keyword = query.trim().toLowerCase();
 
@@ -201,7 +291,17 @@ export default function App() {
       .filter((item) => platformFilter === 'all' || item.platform === platformFilter)
       .filter((item) => {
         if (!keyword) return true;
-        const haystack = [item.title, item.url, item.note, item.rawText, item.platform, ...item.tags]
+        const haystack = [
+          item.title,
+          item.url,
+          item.note,
+          item.rawText,
+          item.description,
+          item.siteName,
+          item.authorName,
+          item.platform,
+          ...item.tags,
+        ]
           .join(' ')
           .toLowerCase();
         return haystack.includes(keyword);
@@ -216,6 +316,64 @@ export default function App() {
 
   function updateDraft(field: keyof DraftState, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function fetchMetadataForDraft() {
+    const normalizedUrl = normalizeUrl(draft.url || extractFirstUrl(draft.rawText));
+    if (!normalizedUrl) return;
+
+    setIsMetadataLoading(true);
+    setDraft((current) => ({ ...current, url: normalizedUrl, metadataError: '' }));
+
+    try {
+      const metadata = await requestMetadata(normalizedUrl);
+      setDraft((current) => ({
+        ...current,
+        url: normalizedUrl,
+        finalUrl: metadata.finalUrl || normalizedUrl,
+        title: current.title.trim() ? current.title : metadata.title || current.title,
+        description: metadata.description || current.description,
+        imageUrl: metadata.image || current.imageUrl,
+        siteName: metadata.siteName || current.siteName,
+        authorName: metadata.author || current.authorName,
+        metadataError: '',
+      }));
+    } catch (error) {
+      setDraft((current) => ({ ...current, metadataError: metadataErrorText((error as Error).message) }));
+    } finally {
+      setIsMetadataLoading(false);
+    }
+  }
+
+  async function enrichExistingItem(item: FavoriteItem) {
+    try {
+      const metadata = await requestMetadata(item.url);
+      setItems((current) =>
+        current.map((candidate) => {
+          if (candidate.id !== item.id) return candidate;
+
+          return {
+            ...candidate,
+            finalUrl: metadata.finalUrl || candidate.finalUrl,
+            title: isRealTitle(candidate.title, candidate.url) ? candidate.title : metadata.title || candidate.title,
+            description: metadata.description || candidate.description,
+            imageUrl: metadata.image || candidate.imageUrl,
+            siteName: metadata.siteName || candidate.siteName,
+            authorName: metadata.author || candidate.authorName,
+            metadataFetchedAt: new Date().toISOString(),
+            metadataError: '',
+          };
+        }),
+      );
+    } catch (error) {
+      setItems((current) =>
+        current.map((candidate) =>
+          candidate.id === item.id
+            ? { ...candidate, metadataError: metadataErrorText((error as Error).message), metadataFetchedAt: new Date().toISOString() }
+            : candidate,
+        ),
+      );
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -234,6 +392,13 @@ export default function App() {
       sourceAction: draft.sourceAction,
       createdAt: new Date().toISOString(),
       rawText: draft.rawText.trim() || undefined,
+      description: draft.description.trim() || undefined,
+      imageUrl: draft.imageUrl.trim() || undefined,
+      siteName: draft.siteName.trim() || undefined,
+      authorName: draft.authorName.trim() || undefined,
+      finalUrl: draft.finalUrl.trim() || undefined,
+      metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName ? new Date().toISOString() : undefined,
+      metadataError: draft.metadataError || undefined,
     };
 
     setItems((current) => [item, ...current]);
@@ -290,7 +455,7 @@ export default function App() {
           <h1>Favorite Vault</h1>
           <p>
             把 Threads、IG、FB、YouTube、Bilibili 這些平台上你順手收藏或按愛心的內容，先用分享連結集中起來。
-            平台不給 API，我們就從分享入口硬撿，文明社會真感人。
+            現在會嘗試抓標題、描述、縮圖和站名，至少不要只留一堆網址屍體。
           </p>
         </div>
         <div className="hero-actions">
@@ -305,13 +470,27 @@ export default function App() {
         </div>
       </section>
 
+      {items.length > 0 && (
+        <section className="insight-card">
+          <div>
+            <p className="eyebrow">AI-ready profile</p>
+            <h2>個人化資料正在長出來</h2>
+            <p>
+              已解析 {aiSeed.metadataCount} / {items.length} 筆 metadata。
+              {aiSeed.topPlatform ? ` 最近偏多來自 ${aiSeed.topPlatform}。` : ''}
+              {aiSeed.topTags.length > 0 ? ` 常見標籤：${aiSeed.topTags.join('、')}。` : ' 加一點標籤，之後 AI 才不會像算命仙一樣亂猜。'}
+            </p>
+          </div>
+        </section>
+      )}
+
       <section className="toolbar-card">
         <label className="search-box">
           <span>搜尋</span>
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜尋標題、網址、筆記、標籤..."
+            placeholder="搜尋標題、描述、網址、筆記、標籤..."
           />
         </label>
 
@@ -370,29 +549,48 @@ export default function App() {
         ) : (
           filteredItems.map((item) => (
             <article className="item-card" key={item.id}>
-              <div className="item-card-header">
-                <span className={`platform-pill platform-${item.platform}`}>{platformLabels[item.platform]}</span>
-                <span className="date-text">{formatDate(item.createdAt)}</span>
-              </div>
-              <h2>{item.title}</h2>
-              <a href={item.url} target="_blank" rel="noreferrer">
-                {item.url}
-              </a>
-              {item.note && <p className="note-text">{item.note}</p>}
-              {item.tags.length > 0 && (
-                <div className="item-tags">
-                  {item.tags.map((tag) => (
-                    <button key={tag} type="button" onClick={() => setQuery(tag)}>
-                      #{tag}
-                    </button>
-                  ))}
-                </div>
+              {item.imageUrl && (
+                <a className="thumbnail-link" href={item.url} target="_blank" rel="noreferrer" aria-label={`開啟 ${item.title}`}>
+                  <img src={item.imageUrl} alt="" loading="lazy" />
+                </a>
               )}
-              <div className="item-footer">
-                <span>{item.sourceAction === 'share-target' ? '分享匯入' : item.sourceAction === 'imported' ? '檔案匯入' : '手動新增'}</span>
-                <button type="button" onClick={() => removeItem(item.id)}>
-                  刪除
-                </button>
+              <div className="item-card-body">
+                <div className="item-card-header">
+                  <span className={`platform-pill platform-${item.platform}`}>{platformLabels[item.platform]}</span>
+                  <span className="date-text">{formatDate(item.createdAt)}</span>
+                </div>
+                <h2>{item.title}</h2>
+                <a href={item.url} target="_blank" rel="noreferrer">
+                  {item.finalUrl || item.url}
+                </a>
+                {(item.siteName || item.authorName) && (
+                  <p className="meta-text">
+                    {[item.siteName, item.authorName].filter(Boolean).join(' · ')}
+                  </p>
+                )}
+                {item.description && <p className="description-text">{item.description}</p>}
+                {item.note && <p className="note-text">{item.note}</p>}
+                {item.metadataError && <p className="error-text">解析失敗：{item.metadataError}</p>}
+                {item.tags.length > 0 && (
+                  <div className="item-tags">
+                    {item.tags.map((tag) => (
+                      <button key={tag} type="button" onClick={() => setQuery(tag)}>
+                        #{tag}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="item-footer">
+                  <span>{item.sourceAction === 'share-target' ? '分享匯入' : item.sourceAction === 'imported' ? '檔案匯入' : '手動新增'}</span>
+                  <div className="item-actions">
+                    <button type="button" onClick={() => enrichExistingItem(item)}>
+                      解析
+                    </button>
+                    <button type="button" onClick={() => removeItem(item.id)}>
+                      刪除
+                    </button>
+                  </div>
+                </div>
               </div>
             </article>
           ))
@@ -422,14 +620,33 @@ export default function App() {
               />
             </label>
 
+            <div className="metadata-actions">
+              <button type="button" onClick={fetchMetadataForDraft} disabled={isMetadataLoading || !draft.url.trim()}>
+                {isMetadataLoading ? '解析中...' : '解析連結'}
+              </button>
+              <span>會嘗試抓標題、描述、縮圖、站名。被平台擋就沒輒，平台不是你家倉庫。</span>
+            </div>
+
             <label>
               <span>標題</span>
               <input
                 value={draft.title}
                 onChange={(event) => updateDraft('title', event.target.value)}
-                placeholder="可留空，會用平台名稱當預設標題"
+                placeholder="按解析連結後會自動帶入"
               />
             </label>
+
+            {(draft.description || draft.imageUrl || draft.siteName || draft.metadataError) && (
+              <section className="metadata-preview">
+                {draft.imageUrl && <img src={draft.imageUrl} alt="" />}
+                <div>
+                  <p className="eyebrow">Metadata</p>
+                  {draft.siteName && <p className="meta-text">{draft.siteName}</p>}
+                  {draft.description && <p>{draft.description}</p>}
+                  {draft.metadataError && <p className="error-text">{draft.metadataError}</p>}
+                </div>
+              </section>
+            )}
 
             <label>
               <span>標籤</span>

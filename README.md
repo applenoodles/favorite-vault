@@ -8,8 +8,10 @@
 - PWA 安裝支援
 - Android / Chrome PWA Share Target 支援
 - 平台自動辨識：YouTube、Instagram、Threads、Facebook、Bilibili、其他
-- 搜尋標題、網址、筆記、標籤
+- Cloudflare Pages Function 解析 metadata：標題、描述、縮圖、站名、作者
+- 搜尋標題、描述、網址、筆記、標籤
 - 平台統計
+- AI-ready profile 小摘要
 - JSON 匯出 / 匯入
 - 離線 fallback service worker
 
@@ -71,10 +73,34 @@ PWA Share Target 通常需要：
 
 桌面版最好用。可以在每個平台頁面加「存到 Favorite Vault」按鈕，或讀目前頁面 URL/title 後送進後端。
 
+## Metadata API
+
+Cloudflare Pages 部署後會提供：
+
+```txt
+GET /api/metadata?url=https%3A%2F%2Fexample.com
+```
+
+會回傳：
+
+```json
+{
+  "ok": true,
+  "title": "頁面標題",
+  "description": "頁面描述",
+  "image": "縮圖 URL",
+  "siteName": "站名",
+  "author": "作者",
+  "finalUrl": "redirect 後網址"
+}
+```
+
+注意：Instagram、Threads、Facebook、Bilibili 等平台可能會擋未登入或機器人請求，所以不是每個連結都能完整解析。這不是前端爛，是平台把門焊死。
+
 ## 下一步建議
 
-1. 加 Supabase，讓資料跨裝置同步
-2. 加 metadata fetch API，自動抓標題、縮圖、描述
-3. 加 Chrome extension
-4. 加 LINE bot webhook
-5. 加 AI 摘要與自動標籤
+1. 加 Supabase / Cloudflare D1，讓資料跨裝置同步
+2. 加 AI 摘要與自動標籤
+3. 加向量搜尋，讓 AI 能依收藏內容找相似素材
+4. 加 Chrome extension
+5. 加 LINE bot webhook
