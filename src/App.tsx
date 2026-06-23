@@ -111,6 +111,7 @@ const PLATFORM_LABEL: Record<Platform, string> = {
 };
 
 const PLATFORM_ORDER: Platform[] = ['youtube', 'instagram', 'threads', 'facebook', 'bilibili', 'other'];
+const PENDING_CATEGORY = '待整理';
 
 const EMPTY_DRAFT: DraftState = {
   url: '',
@@ -271,12 +272,16 @@ function generateSummary(text: string, fallback = '') {
 function inferCategory(input: string, platform: Platform) {
   const text = input.toLowerCase();
   const rules: Array<[string, RegExp]> = [
-    ['AI / 工具', /ai|人工智慧|llm|gpt|claude|模型|prompt|自動化|工具|workflow/],
-    ['程式 / 開發', /react|typescript|javascript|python|api|github|cloudflare|chrome extension|前端|後端|程式/],
-    ['影音 / 創作', /youtube|bilibili|影片|剪輯|音樂|動畫|podcast|創作/],
+    ['AI / 工具', /ai|人工智慧|llm|gpt|chatgpt|claude|模型|prompt|自動化|工具|workflow/],
+    ['程式 / 開發', /react|typescript|javascript|python|api|github|cloudflare|chrome extension|前端|後端|程式|資料庫/],
+    ['影音 / 創作', /youtube|bilibili|影片|剪輯|音樂|動畫|podcast|創作|字幕/],
     ['設計 / UI', /ui|ux|design|介面|設計|字體|排版|css|html/],
-    ['學習 / 知識', /教學|筆記|學習|研究|論文|課程|知識|百科|wiki/],
-    ['社群 / 貼文', /threads|instagram|facebook|貼文|社群|ig|fb/],
+    ['學習 / 知識', /教學|學習|研究|論文|課程|知識|百科|wiki|大學|微積分/],
+    ['旅遊 / 地點', /旅遊|旅行|自由行|大阪|京都|日本|沖繩|景點|行程/],
+    ['生活 / 想法', /情侶|同居|生活|想法|關係|日常|溝通|伴侶/],
+    ['健康 / 醫療', /醫學|醫療|手術|動脈瘤|健康|醫生|醫院|症狀/],
+    ['食物 / 食譜', /食譜|餅乾|料理|食物|甜點|餐廳|吃/],
+    ['運動 / 賽事', /世界盃|足球|籃球|比賽|球星|梅西|哈蘭德|姆巴佩/],
   ];
 
   for (const [label, pattern] of rules) {
@@ -284,8 +289,7 @@ function inferCategory(input: string, platform: Platform) {
   }
 
   if (platform === 'youtube' || platform === 'bilibili') return '影音 / 創作';
-  if (platform === 'instagram' || platform === 'threads' || platform === 'facebook') return '社群 / 貼文';
-  return '未分類';
+  return PENDING_CATEGORY;
 }
 
 function suggestTags(text: string, platform: Platform) {
@@ -429,11 +433,43 @@ async function deleteCloudItem(_source: string, id: string) {
 }
 
 function fallbackTitle(url: string) {
-  return `${PLATFORM_LABEL[detectPlatform(url)]} 收藏`;
+  const platform = detectPlatform(url);
+  const descriptor = urlDescriptor(url);
+  return `${PLATFORM_LABEL[platform]} 待整理${descriptor ? ` · ${descriptor}` : ''}`;
+}
+
+function urlDescriptor(url: string) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const handle = parts.find((part) => part.startsWith('@'));
+    if (handle) return handle;
+    const last = parts[parts.length - 1];
+    return last && last.length < 48 ? last : parsed.hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+function isGenericTitle(title: string, url = '') {
+  const normalized = title.trim().toLowerCase();
+  if (!normalized) return true;
+  const generic = ['threads', 'instagram', 'facebook', 'youtube', 'bilibili', 'x', 'home', '首頁'];
+  if (generic.includes(normalized)) return true;
+  if (normalized.endsWith('收藏') || normalized.includes('待整理')) return true;
+  if (url && normalized === fallbackTitle(url).toLowerCase()) return true;
+  return false;
+}
+
+function deriveItemTitle(rawTitle: string, url: string, summary = '', description = '') {
+  if (!isGenericTitle(rawTitle, url)) return rawTitle.trim();
+  const source = cleanSummarySource(summary || description);
+  if (source.length >= 16) return source.slice(0, 48) + (source.length > 48 ? '…' : '');
+  return fallbackTitle(url);
 }
 
 function isRealTitle(title: string, url: string) {
-  return title.trim() && title !== fallbackTitle(url);
+  return title.trim() && !isGenericTitle(title, url);
 }
 
 function formatDate(iso: string) {
@@ -473,9 +509,10 @@ function needsLlmPass(item: FavoriteItem) {
     item.summary.length < 24 ||
     !item.category ||
     item.category === '未分類' ||
+    item.category === PENDING_CATEGORY ||
     Boolean(item.metadataError) ||
     ['instagram', 'threads', 'facebook'].includes(item.platform) ||
-    item.title === fallbackTitle(item.url)
+    isGenericTitle(item.title, item.url)
   );
 }
 
@@ -512,10 +549,10 @@ function buildLlmBatchMarkdown(items: FavoriteItem[]) {
   "items": [
     {
       "id": "原本的 id，必填，不可改",
-      "title": "可選，若原標題很爛才修",
+      "title": "必填。請產生能辨識主題的標題，不要用 Threads 收藏、Instagram 收藏、待整理 這種廢標題",
       "description": "可選，短描述",
       "summary": "80 到 180 字，說清楚這筆收藏在講什麼、為什麼值得留下",
-      "category": "分類，例如 AI / 工具、社群 / 貼文、學習 / 知識、設計 / UI、影音 / 創作、生活 / 想法",
+      "category": "必填。請依主題分類，例如 AI / 工具、學習 / 知識、設計 / UI、影音 / 創作、生活 / 想法、健康 / 醫療、旅遊 / 地點。不要把平台當分類，不要用 社群 / 貼文，除非內容本身是在討論社群平台。",
       "tags": ["3 到 8 個短標籤"],
       "note": "可選，若有觀察、洞察或提醒才填"
     }
@@ -770,7 +807,7 @@ export default function App() {
         extractionMethod: metadata.extractionMethod || current.extractionMethod,
         canonicalUrl: metadata.canonicalUrl || current.canonicalUrl,
         summary: current.summary || generateSummary(metadata.contentText || metadata.description || '', metadata.title || ''),
-        category: current.category || inferCategory([metadata.title, metadata.description, metadata.contentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl)),
+        category: current.category && current.category !== PENDING_CATEGORY ? current.category : inferCategory([metadata.title, metadata.description, metadata.contentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl)),
         tags: current.tags || suggestTags([metadata.title, metadata.description, metadata.contentText, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl)).join(' '),
         metadataError: '',
       }));
@@ -803,7 +840,7 @@ export default function App() {
             extractionMethod: metadata.extractionMethod || candidate.extractionMethod,
             canonicalUrl: metadata.canonicalUrl || candidate.canonicalUrl,
             summary: candidate.summary || generateSummary(metadata.contentText || metadata.description || '', metadata.title || candidate.title),
-            category: candidate.category || inferCategory([metadata.title, metadata.description, metadata.contentText, candidate.url].filter(Boolean).join('\n'), candidate.platform),
+            category: candidate.category && candidate.category !== PENDING_CATEGORY ? candidate.category : inferCategory([metadata.title, metadata.description, metadata.contentText, candidate.url].filter(Boolean).join('\n'), candidate.platform),
             metadataFetchedAt: new Date().toISOString(),
             metadataError: '',
           };
@@ -829,11 +866,12 @@ export default function App() {
     const summarySource = draft.contentText.trim() || draft.rawText.trim() || draft.description.trim();
     const summary = draft.summary.trim() || generateSummary(summarySource, draft.description || draft.title);
     const category = draft.category.trim() || inferCategory([draft.title, draft.description, summary, normalizedUrl].filter(Boolean).join('\n'), detectPlatform(normalizedUrl));
+    const title = deriveItemTitle(draft.title.trim(), normalizedUrl, summary, draft.description);
 
     const item: FavoriteItem = {
       id: createId(),
       url: normalizedUrl,
-      title: draft.title.trim() || fallbackTitle(normalizedUrl),
+      title,
       note: draft.note.trim(),
       tags: parseTags(draft.tags),
       platform: detectPlatform(normalizedUrl),

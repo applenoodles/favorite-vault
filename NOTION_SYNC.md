@@ -29,10 +29,10 @@ Create a database with these properties exactly:
 | Name | Title |
 | URL | URL |
 | Summary | Text |
-| Category | Select |
+| Category | Select (`待整理`, `AI / 工具`, `學習 / 知識`, `生活 / 想法`, etc.) |
 | Tags | Multi-select |
 | Platform | Select |
-| Status | Select |
+| Status | Select (`inbox`, `needs_llm`, `summarized`) |
 | Item ID | Text |
 | Description | Text |
 | Note | Text |

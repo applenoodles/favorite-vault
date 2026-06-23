@@ -150,13 +150,13 @@ async function findPageIdByItemId(config, itemId) {
 
 function itemToProperties(item) {
   return {
-    Name: titleProp(item.title || item.url || 'Untitled'),
+    Name: titleProp(displayTitle(item)),
     URL: urlProp(item.finalUrl || item.url),
     Summary: richTextProp(item.summary || ''),
     Category: selectProp(item.category || '未分類'),
     Tags: multiSelectProp(item.tags || []),
     Platform: selectProp(platformLabel(item.platform)),
-    Status: selectProp(item.summary ? 'summarized' : 'inbox'),
+    Status: selectProp(isRefined(item) ? 'summarized' : 'needs_llm'),
     'Item ID': richTextProp(item.id),
     Description: richTextProp(item.description || ''),
     Note: richTextProp(item.note || ''),
@@ -190,6 +190,27 @@ function pageToItem(page) {
     summary: readRichText(properties.Summary),
     category: readSelect(properties.Category),
   };
+}
+
+function displayTitle(item) {
+  const title = String(item.title || '').trim();
+  if (title && !isGenericTitle(title)) return title;
+  const source = String(item.summary || item.description || '').trim();
+  if (source.length >= 16) return source.slice(0, 48) + (source.length > 48 ? '…' : '');
+  return `${platformLabel(item.platform)} needs LLM`;
+}
+
+function isRefined(item) {
+  const category = String(item.category || '').trim();
+  return Boolean(item.summary && category && category !== '待整理' && category !== '未分類' && !isGenericTitle(item.title || ''));
+}
+
+function isGenericTitle(title) {
+  const normalized = String(title || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (['threads', 'instagram', 'facebook', 'youtube', 'bilibili', 'home', '首頁'].includes(normalized)) return true;
+  if (normalized.endsWith('收藏') || normalized.includes('待整理')) return true;
+  return false;
 }
 
 function titleProp(value) {
