@@ -111,6 +111,7 @@ const metadataErrorLabels: Record<string, string> = {
   fetch_failed: '抓取失敗，對方網站可能擋機器人或需要登入。',
   timeout: '抓取逾時，對方網站慢得像行政流程。',
   fetch_error: '抓取時發生錯誤。',
+  server_non_json: '解析服務回了非 JSON，通常是平台或 Cloudflare 中途炸了。',
 };
 
 function createId() {
@@ -253,6 +254,12 @@ function metadataErrorText(error?: string) {
 
 async function requestMetadata(url: string): Promise<MetadataResponse> {
   const response = await fetch(`/api/metadata?url=${encodeURIComponent(url)}`);
+  const contentType = response.headers.get('content-type') || '';
+
+  if (!contentType.includes('application/json')) {
+    throw new Error('server_non_json');
+  }
+
   const data = (await response.json()) as MetadataResponse;
 
   if (!response.ok || !data.ok) {
