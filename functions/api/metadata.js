@@ -1,5 +1,6 @@
-const MAX_BYTES = 260_000;
-const FETCH_TIMEOUT_MS = 8_000;
+const MAX_BYTES = 700_000;
+const MAX_CONTENT_CHARS = 24_000;
+const FETCH_TIMEOUT_MS = 10_000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -35,7 +36,7 @@ export async function onRequestGet({ request }) {
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'accept-language': 'zh-TW,zh;q=0.9,en;q=0.8',
         'user-agent':
-          'Mozilla/5.0 (compatible; FavoriteVaultBot/0.1; +https://lting.dpdns.org) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+          'Mozilla/5.0 (compatible; FavoriteVaultBot/0.2; +https://lting.dpdns.org) AppleWebKit/537.36 Chrome/120 Safari/537.36',
       },
     });
 
@@ -59,6 +60,10 @@ export async function onRequestGet({ request }) {
           image: '',
           siteName: hostFromUrl(finalUrl),
           author: '',
+          contentText: '',
+          contentPreview: '',
+          contentLength: 0,
+          extractionMethod: 'non_html',
           limited: false,
         },
         200,
@@ -67,6 +72,7 @@ export async function onRequestGet({ request }) {
 
     const { text, limited } = await readLimitedText(response, MAX_BYTES);
     const metadata = extractMetadata(text, finalUrl);
+    const extracted = extractReadableContent(text, finalUrl);
 
     return json({
       ok: true,
@@ -76,6 +82,7 @@ export async function onRequestGet({ request }) {
       contentType,
       limited,
       ...metadata,
+      ...extracted,
     });
   } catch (error) {
     const message = error?.name === 'AbortError' ? 'timeout' : 'fetch_error';
@@ -148,7 +155,7 @@ async function readLimitedText(response, maxBytes) {
   try {
     await reader.cancel();
   } catch {
-    // Nothing useful to do here. The network has already made its opinion known.
+    // The network has already made its little point.
   }
 
   const bytes = concatUint8Arrays(chunks);
@@ -211,6 +218,149 @@ function extractMetadata(html, baseUrl) {
   };
 }
 
+function extractReadableContent(html, baseUrl) {
+  const candidates = [
+    { method: 'article', html: firstTagContent(html, 'article') },
+    { method: 'main', html: firstTagContent(html, 'main') },
+    { method: 'role_main', html: firstAttributeBlock(html, 'role', 'main') },
+    { method: 'body', html: bodyContent(html) },
+  ];
+
+  let best = { method: 'none', text: '' };
+
+  for (const candidate of candidates) {
+    if (!candidate.html) continue;
+    const text = htmlToReadableText(candidate.html);
+    if (scoreReadableText(text) > scoreReadableText(best.text)) {
+      best = { method: candidate.method, text };
+    }
+  }
+
+  const jsonLdText = extractJsonLdText(html);
+  if (scoreReadableText(jsonLdText) > scoreReadableText(best.text)) {
+    best = { method: 'json_ld', text: jsonLdText };
+  }
+
+  const contentText = cleanReadableText(best.text).slice(0, MAX_CONTENT_CHARS);
+  const contentPreview = contentText.slice(0, 600);
+
+  return {
+    contentText,
+    contentPreview,
+    contentLength: contentText.length,
+    extractionMethod: contentText ? best.method : 'none',
+    canonicalUrl: absolutize(canonicalUrl(html), baseUrl),
+  };
+}
+
+function firstTagContent(html, tagName) {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  return html.match(pattern)?.[1] || '';
+}
+
+function firstAttributeBlock(html, attrName, attrValue) {
+  const escaped = escapeRegExp(attrValue);
+  const pattern = new RegExp(`<([a-z0-9-]+)[^>]+${attrName}=["']${escaped}["'][^>]*>([\\s\\S]*?)<\\/\\1>`, 'i');
+  return html.match(pattern)?.[2] || '';
+}
+
+function bodyContent(html) {
+  return html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] || html;
+}
+
+function htmlToReadableText(rawHtml) {
+  return rawHtml
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, ' ')
+    .replace(/<header\b[\s\S]*?<\/header>/gi, ' ')
+    .replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ')
+    .replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ')
+    .replace(/<aside\b[\s\S]*?<\/aside>/gi, ' ')
+    .replace(/<!--([\s\S]*?)-->/g, ' ')
+    .replace(/<(p|div|section|article|li|br|h[1-6]|blockquote|pre|tr|td|th)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .split('\n')
+    .map((line) => cleanText(line))
+    .filter(isUsefulLine)
+    .join('\n');
+}
+
+function extractJsonLdText(html) {
+  const blocks = Array.from(html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi));
+  const parts = [];
+
+  for (const block of blocks) {
+    const raw = decodeHtmlEntities(block[1] || '').trim();
+    try {
+      collectJsonLdText(JSON.parse(raw), parts);
+    } catch {
+      // Many sites serve malformed JSON-LD because apparently civilization was optional.
+    }
+  }
+
+  return cleanReadableText(parts.join('\n'));
+}
+
+function collectJsonLdText(value, parts) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonLdText(item, parts);
+    return;
+  }
+  if (typeof value !== 'object') return;
+
+  for (const key of ['headline', 'name', 'description', 'articleBody', 'text']) {
+    if (typeof value[key] === 'string') parts.push(value[key]);
+  }
+
+  for (const key of ['@graph', 'mainEntity', 'hasPart', 'itemListElement']) {
+    collectJsonLdText(value[key], parts);
+  }
+}
+
+function isUsefulLine(line) {
+  if (!line) return false;
+  const normalized = line.trim();
+  if (normalized.length < 24 && !/[。！？.!?]/.test(normalized)) return false;
+  if (/^(cookie|privacy|terms|login|sign in|subscribe|share|menu)$/i.test(normalized)) return false;
+  if (/^(登入|註冊|分享|訂閱|隱私|條款|選單|返回|更多|載入中)$/.test(normalized)) return false;
+  return true;
+}
+
+function cleanReadableText(text) {
+  const seen = new Set();
+  return text
+    .split('\n')
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .filter((line) => {
+      const key = line.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function scoreReadableText(text) {
+  if (!text) return 0;
+  const lines = text.split('\n').filter(Boolean);
+  const longLines = lines.filter((line) => line.length > 80).length;
+  const punctuation = (text.match(/[。！？.!?，,]/g) || []).length;
+  return text.length + longLines * 120 + punctuation * 5;
+}
+
+function canonicalUrl(html) {
+  const tag = html.match(/<link[^>]+rel=["']canonical["'][^>]*>/i)?.[0] || '';
+  return getAttribute(tag, 'href');
+}
+
 function meta(html, attrName, attrValue) {
   const escapedAttrValue = escapeRegExp(attrValue);
   const pattern = new RegExp(`<meta[^>]+${attrName}=["']${escapedAttrValue}["'][^>]*>`, 'i');
@@ -234,15 +384,15 @@ function firstNonEmpty(values) {
 }
 
 function cleanText(value) {
-  return decodeHtmlEntities(value)
+  return decodeHtmlEntities(value || '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 1000);
+    .slice(0, 3000);
 }
 
 function decodeHtmlEntities(value) {
-  return value
+  return String(value || '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
@@ -282,7 +432,7 @@ function hostFromUrl(raw) {
 }
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function json(data, status = 200) {

@@ -9,7 +9,8 @@
 - Android / Chrome PWA Share Target 支援
 - 平台自動辨識：YouTube、Instagram、Threads、Facebook、Bilibili、其他
 - Cloudflare Pages Function 解析 metadata：標題、描述、縮圖、站名、作者
-- 搜尋標題、描述、網址、筆記、標籤
+- 嘗試抽取 HTML 內文 contentText，供搜尋、摘要與未來 AI 推薦使用
+- 搜尋標題、描述、內文、網址、筆記、標籤
 - 平台統計
 - AI-ready profile 小摘要
 - JSON 匯出 / 匯入
@@ -91,11 +92,14 @@ GET /api/metadata?url=https%3A%2F%2Fexample.com
   "image": "縮圖 URL",
   "siteName": "站名",
   "author": "作者",
-  "finalUrl": "redirect 後網址"
+  "finalUrl": "redirect 後網址",
+  "contentText": "抽取出的正文文字",
+  "contentLength": 1234,
+  "extractionMethod": "article | main | body | json_ld | none"
 }
 ```
 
-注意：Instagram、Threads、Facebook、Bilibili 等平台可能會擋未登入或機器人請求，所以不是每個連結都能完整解析。這不是前端爛，是平台把門焊死。
+注意：Instagram、Threads、Facebook、Bilibili 等平台可能會擋未登入或機器人請求，所以不是每個連結都能完整解析。一般文章、部落格、文件頁通常比較容易抽出正文；需要登入、全 JS render、反爬嚴重的平台就會很破。這不是前端爛，是平台把門焊死。
 
 ## 下一步建議
 

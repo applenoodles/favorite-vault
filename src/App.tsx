@@ -21,6 +21,10 @@ interface FavoriteItem {
   finalUrl?: string;
   metadataFetchedAt?: string;
   metadataError?: string;
+  contentText?: string;
+  contentLength?: number;
+  extractionMethod?: string;
+  canonicalUrl?: string;
 }
 
 interface DraftState {
@@ -36,6 +40,10 @@ interface DraftState {
   authorName: string;
   finalUrl: string;
   metadataError: string;
+  contentText: string;
+  contentLength: number;
+  extractionMethod: string;
+  canonicalUrl: string;
 }
 
 interface MetadataResponse {
@@ -50,6 +58,11 @@ interface MetadataResponse {
   siteName?: string;
   author?: string;
   limited?: boolean;
+  contentText?: string;
+  contentPreview?: string;
+  contentLength?: number;
+  extractionMethod?: string;
+  canonicalUrl?: string;
 }
 
 type BeforeInstallPromptEvent = Event & {
@@ -84,6 +97,10 @@ const EMPTY_DRAFT: DraftState = {
   authorName: '',
   finalUrl: '',
   metadataError: '',
+  contentText: '',
+  contentLength: 0,
+  extractionMethod: '',
+  canonicalUrl: '',
 };
 
 const metadataErrorLabels: Record<string, string> = {
@@ -167,6 +184,10 @@ function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null
     finalUrl: item.finalUrl,
     metadataFetchedAt: item.metadataFetchedAt,
     metadataError: item.metadataError,
+    contentText: item.contentText,
+    contentLength: item.contentLength,
+    extractionMethod: item.extractionMethod,
+    canonicalUrl: item.canonicalUrl,
   };
 }
 
@@ -296,7 +317,7 @@ export default function App() {
   }, [items]);
 
   const profile = useMemo(() => {
-    const parsed = items.filter((item) => !item.metadataError && (item.siteName || item.imageUrl || item.description)).length;
+    const parsed = items.filter((item) => !item.metadataError && (item.siteName || item.imageUrl || item.description || item.contentText)).length;
     const topPlatform = PLATFORM_ORDER.map((platform) => [platform, platformCounts[platform]] as const)
       .filter(([, count]) => count > 0)
       .sort((a, b) => b[1] - a[1])[0]?.[0];
@@ -330,6 +351,7 @@ export default function App() {
           item.note,
           item.rawText,
           item.description,
+          item.contentText,
           item.siteName,
           item.authorName,
           item.platform,
@@ -370,6 +392,10 @@ export default function App() {
         imageUrl: metadata.image || current.imageUrl,
         siteName: metadata.siteName || current.siteName || hostOf(metadata.finalUrl || normalizedUrl),
         authorName: metadata.author || current.authorName,
+        contentText: metadata.contentText || current.contentText,
+        contentLength: metadata.contentLength || current.contentLength,
+        extractionMethod: metadata.extractionMethod || current.extractionMethod,
+        canonicalUrl: metadata.canonicalUrl || current.canonicalUrl,
         metadataError: '',
       }));
     } catch (error) {
@@ -396,6 +422,10 @@ export default function App() {
             imageUrl: metadata.image || candidate.imageUrl,
             siteName: metadata.siteName || candidate.siteName || hostOf(metadata.finalUrl || candidate.url),
             authorName: metadata.author || candidate.authorName,
+            contentText: metadata.contentText || candidate.contentText,
+            contentLength: metadata.contentLength || candidate.contentLength,
+            extractionMethod: metadata.extractionMethod || candidate.extractionMethod,
+            canonicalUrl: metadata.canonicalUrl || candidate.canonicalUrl,
             metadataFetchedAt: new Date().toISOString(),
             metadataError: '',
           };
@@ -433,8 +463,12 @@ export default function App() {
       siteName: draft.siteName.trim() || hostOf(draft.finalUrl || normalizedUrl),
       authorName: draft.authorName.trim() || undefined,
       finalUrl: draft.finalUrl.trim() || undefined,
-      metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName ? new Date().toISOString() : undefined,
+      metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName || draft.contentText ? new Date().toISOString() : undefined,
       metadataError: draft.metadataError || undefined,
+      contentText: draft.contentText.trim() || undefined,
+      contentLength: draft.contentLength || undefined,
+      extractionMethod: draft.extractionMethod || undefined,
+      canonicalUrl: draft.canonicalUrl || undefined,
     };
 
     setItems((current) => [item, ...current]);
@@ -737,6 +771,16 @@ function ItemCard({
 
         {item.description && <p className="card__desc">{item.description}</p>}
 
+        {item.contentText && (
+          <details className="card__content">
+            <summary>
+              已抽取內文 {item.contentLength ? `${item.contentLength.toLocaleString()} 字` : ''}
+              {item.extractionMethod ? ` · ${item.extractionMethod}` : ''}
+            </summary>
+            <p>{item.contentText.slice(0, 1200)}</p>
+          </details>
+        )}
+
         {item.note && (
           <p className="card__note">
             <span className="card__note-label">筆記</span>
@@ -839,7 +883,7 @@ function AddItemModal({
   }, [onClose]);
 
   const previewUrl = draft.finalUrl || draft.url;
-  const hasPreview = draft.description || draft.imageUrl || draft.siteName || draft.title || draft.metadataError;
+  const hasPreview = draft.description || draft.imageUrl || draft.siteName || draft.title || draft.metadataError || draft.contentText;
 
   return (
     <div className="sheet-overlay" role="presentation" onClick={onClose}>
@@ -900,6 +944,9 @@ function AddItemModal({
                 {(draft.siteName || hostOf(previewUrl)) && <span className="preview__site">{draft.siteName || hostOf(previewUrl)}</span>}
                 <span className="preview__title">{draft.title || '（無標題）'}</span>
                 {draft.description && <span className="preview__desc">{draft.description}</span>}
+                {draft.contentText && (
+                  <span className="preview__content">已抽取內文 {draft.contentLength ? `${draft.contentLength.toLocaleString()} 字` : ''}</span>
+                )}
                 <span className="preview__url">{hostOf(previewUrl)}</span>
                 {draft.metadataError && <span className="preview__error">{draft.metadataError}</span>}
               </div>
