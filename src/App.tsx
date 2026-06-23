@@ -113,6 +113,7 @@ const metadataErrorLabels: Record<string, string> = {
   fetch_error: '抓取時發生錯誤。',
   server_non_json: '解析服務回了非 JSON，通常是平台或 Cloudflare 中途炸了。',
   platform_fetch_failed: '平台資料抓取失敗，這個站可能擋住伺服器請求。',
+  platform_login_wall: '這個平台通常需要登入或阻擋伺服器抓取。請用分享原文、手動貼內文，或之後改用瀏覽器外掛抓當前頁面。',
 };
 
 function createId() {
@@ -456,6 +457,8 @@ export default function App() {
     const normalizedUrl = normalizeUrl(draft.url || extractFirstUrl(draft.rawText));
     if (!normalizedUrl) return;
 
+    const fallbackContentText = draft.contentText.trim() || draft.rawText.trim();
+
     const item: FavoriteItem = {
       id: createId(),
       url: normalizedUrl,
@@ -473,8 +476,8 @@ export default function App() {
       finalUrl: draft.finalUrl.trim() || undefined,
       metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName || draft.contentText ? new Date().toISOString() : undefined,
       metadataError: draft.metadataError || undefined,
-      contentText: draft.contentText.trim() || undefined,
-      contentLength: draft.contentLength || undefined,
+      contentText: fallbackContentText || undefined,
+      contentLength: draft.contentLength || fallbackContentText.length || undefined,
       extractionMethod: draft.extractionMethod || undefined,
       canonicalUrl: draft.canonicalUrl || undefined,
     };

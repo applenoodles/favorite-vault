@@ -38,6 +38,10 @@ export async function onRequestGet({ request }) {
     return json({ ok: false, error: 'platform_fetch_failed', platform: 'bilibili' }, 502);
   }
 
+  if (isMetaUrl(validation.url)) {
+    return json({ ok: false, error: 'platform_login_wall', platform: hostFromUrl(validation.url.toString()) }, 403);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -204,6 +208,11 @@ function extractMetadata(html, baseUrl) {
 function isBilibiliUrl(url) {
   const host = url.hostname.toLowerCase();
   return host.includes('bilibili.com') || host.includes('b23.tv');
+}
+
+function isMetaUrl(url) {
+  const host = url.hostname.toLowerCase();
+  return host.includes('instagram.com') || host.includes('threads.net') || host.includes('threads.com') || host.includes('facebook.com') || host.includes('fb.watch');
 }
 
 async function extractPlatformDataFromUrl(url) {
