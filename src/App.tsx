@@ -1,4 +1,5 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './styles.css';
 
 type Platform = 'youtube' | 'instagram' | 'threads' | 'facebook' | 'bilibili' | 'other';
 type SourceAction = 'manual' | 'share-target' | 'imported';
@@ -58,6 +59,18 @@ type BeforeInstallPromptEvent = Event & {
 
 const STORAGE_KEY = 'favorite-vault-items-v2';
 const LEGACY_STORAGE_KEY = 'favorite-vault-items-v1';
+
+const PLATFORM_LABEL: Record<Platform, string> = {
+  youtube: 'YouTube',
+  instagram: 'Instagram',
+  threads: 'Threads',
+  facebook: 'Facebook',
+  bilibili: 'Bilibili',
+  other: '其他',
+};
+
+const PLATFORM_ORDER: Platform[] = ['youtube', 'instagram', 'threads', 'facebook', 'bilibili', 'other'];
+
 const EMPTY_DRAFT: DraftState = {
   url: '',
   title: '',
@@ -71,15 +84,6 @@ const EMPTY_DRAFT: DraftState = {
   authorName: '',
   finalUrl: '',
   metadataError: '',
-};
-
-const platformLabels: Record<Platform, string> = {
-  youtube: 'YouTube',
-  instagram: 'Instagram',
-  threads: 'Threads',
-  facebook: 'Facebook',
-  bilibili: 'Bilibili',
-  other: '其他',
 };
 
 const metadataErrorLabels: Record<string, string> = {
@@ -124,8 +128,8 @@ function detectPlatform(input: string): Platform {
 
     if (host.includes('youtube.com') || host.includes('youtu.be')) return 'youtube';
     if (host.includes('instagram.com')) return 'instagram';
-    if (host.includes('threads.net')) return 'threads';
-    if (host.includes('facebook.com') || host.includes('fb.watch')) return 'facebook';
+    if (host.includes('threads.net') || host.includes('threads.com')) return 'threads';
+    if (host.includes('facebook.com') || host.includes('fb.watch') || host.includes('fb.com')) return 'facebook';
     if (host.includes('bilibili.com') || host.includes('b23.tv')) return 'bilibili';
   } catch {
     return 'other';
@@ -137,17 +141,42 @@ function detectPlatform(input: string): Platform {
 function parseTags(input: string) {
   return input
     .split(/[#,，、\s]+/)
-    .map((tag) => tag.trim())
+    .map((tag) => tag.replace(/^#/, '').trim())
     .filter(Boolean)
     .filter((tag, index, arr) => arr.indexOf(tag) === index);
+}
+
+function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null {
+  if (!item.url) return null;
+  const url = normalizeUrl(item.url);
+
+  return {
+    id: item.id || createId(),
+    url,
+    title: item.title || fallbackTitle(url),
+    note: item.note || '',
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    platform: item.platform || detectPlatform(url),
+    sourceAction: item.sourceAction || 'imported',
+    createdAt: item.createdAt || new Date().toISOString(),
+    rawText: item.rawText,
+    description: item.description,
+    imageUrl: item.imageUrl,
+    siteName: item.siteName,
+    authorName: item.authorName,
+    finalUrl: item.finalUrl,
+    metadataFetchedAt: item.metadataFetchedAt,
+    metadataError: item.metadataError,
+  };
 }
 
 function loadItems(): FavoriteItem[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as FavoriteItem[];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(raw) as Partial<FavoriteItem>[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeImportedItem).filter(Boolean) as FavoriteItem[];
   } catch {
     return [];
   }
@@ -158,16 +187,32 @@ function saveItems(items: FavoriteItem[]) {
 }
 
 function fallbackTitle(url: string) {
-  const platform = detectPlatform(url);
-  const label = platformLabels[platform];
-  return `${label} 收藏`;
+  return `${PLATFORM_LABEL[detectPlatform(url)]} 收藏`;
+}
+
+function isRealTitle(title: string, url: string) {
+  return title.trim() && title !== fallbackTitle(url);
 }
 
 function formatDate(iso: string) {
-  return new Intl.DateTimeFormat('zh-Hant-TW', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(iso));
+  try {
+    return new Intl.DateTimeFormat('zh-Hant-TW', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    }).format(new Date(iso));
+  } catch {
+    return '';
+  }
+}
+
+function hostOf(url?: string) {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
 }
 
 function downloadFile(filename: string, content: string, mimeType: string) {
@@ -183,10 +228,6 @@ function downloadFile(filename: string, content: string, mimeType: string) {
 function metadataErrorText(error?: string) {
   if (!error) return '';
   return metadataErrorLabels[error] ?? error;
-}
-
-function isRealTitle(title: string, url: string) {
-  return title.trim() && title !== fallbackTitle(url);
 }
 
 async function requestMetadata(url: string): Promise<MetadataResponse> {
@@ -226,9 +267,9 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const sharedUrl = params.get('shareUrl') ?? '';
-    const sharedTitle = params.get('shareTitle') ?? '';
-    const sharedText = params.get('shareText') ?? '';
+    const sharedUrl = params.get('shareUrl') ?? params.get('url') ?? '';
+    const sharedTitle = params.get('shareTitle') ?? params.get('title') ?? '';
+    const sharedText = params.get('shareText') ?? params.get('text') ?? '';
 
     if (!sharedUrl && !sharedTitle && !sharedText) return;
 
@@ -237,18 +278,14 @@ export default function App() {
       ...EMPTY_DRAFT,
       url: bestUrl,
       title: sharedTitle,
-      rawText: sharedText,
+      rawText: [sharedTitle, sharedText].filter(Boolean).join('\n'),
       sourceAction: 'share-target',
     });
     setIsComposerOpen(true);
     window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
 
-  const allTags = useMemo(() => {
-    return Array.from(new Set(items.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
-  }, [items]);
-
-  const stats = useMemo(() => {
+  const platformCounts = useMemo(() => {
     return items.reduce<Record<Platform, number>>(
       (acc, item) => {
         acc[item.platform] += 1;
@@ -258,31 +295,26 @@ export default function App() {
     );
   }, [items]);
 
-  const aiSeed = useMemo(() => {
-    const recentItems = items.slice(0, 20);
-    const tagCounts = new Map<string, number>();
-    const platformCounts = new Map<Platform, number>();
+  const profile = useMemo(() => {
+    const parsed = items.filter((item) => !item.metadataError && (item.siteName || item.imageUrl || item.description)).length;
+    const topPlatform = PLATFORM_ORDER.map((platform) => [platform, platformCounts[platform]] as const)
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1])[0]?.[0];
 
-    for (const item of recentItems) {
-      platformCounts.set(item.platform, (platformCounts.get(item.platform) ?? 0) + 1);
+    const tagFreq = new Map<string, number>();
+    for (const item of items) {
       for (const tag of item.tags) {
-        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+        tagFreq.set(tag, (tagFreq.get(tag) ?? 0) + 1);
       }
     }
 
-    const topTags = Array.from(tagCounts.entries())
+    const frequentTags = Array.from(tagFreq.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([tag]) => `#${tag}`);
+      .slice(0, 4)
+      .map(([tag]) => tag);
 
-    const topPlatform = Array.from(platformCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
-
-    return {
-      topTags,
-      topPlatform: topPlatform ? platformLabels[topPlatform] : '',
-      metadataCount: items.filter((item) => item.description || item.imageUrl || item.siteName).length,
-    };
-  }, [items]);
+    return { parsed, total: items.length, topPlatform: topPlatform || '', frequentTags };
+  }, [items, platformCounts]);
 
   const filteredItems = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -294,6 +326,7 @@ export default function App() {
         const haystack = [
           item.title,
           item.url,
+          item.finalUrl,
           item.note,
           item.rawText,
           item.description,
@@ -302,6 +335,7 @@ export default function App() {
           item.platform,
           ...item.tags,
         ]
+          .filter(Boolean)
           .join(' ')
           .toLowerCase();
         return haystack.includes(keyword);
@@ -309,10 +343,10 @@ export default function App() {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [items, platformFilter, query]);
 
-  function openComposer() {
+  const openComposer = useCallback(() => {
     setDraft(EMPTY_DRAFT);
     setIsComposerOpen(true);
-  }
+  }, []);
 
   function updateDraft(field: keyof DraftState, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -334,7 +368,7 @@ export default function App() {
         title: current.title.trim() ? current.title : metadata.title || current.title,
         description: metadata.description || current.description,
         imageUrl: metadata.image || current.imageUrl,
-        siteName: metadata.siteName || current.siteName,
+        siteName: metadata.siteName || current.siteName || hostOf(metadata.finalUrl || normalizedUrl),
         authorName: metadata.author || current.authorName,
         metadataError: '',
       }));
@@ -346,8 +380,10 @@ export default function App() {
   }
 
   async function enrichExistingItem(item: FavoriteItem) {
+    setItems((current) => current.map((candidate) => (candidate.id === item.id ? { ...candidate, metadataError: '' } : candidate)));
+
     try {
-      const metadata = await requestMetadata(item.url);
+      const metadata = await requestMetadata(item.finalUrl || item.url);
       setItems((current) =>
         current.map((candidate) => {
           if (candidate.id !== item.id) return candidate;
@@ -358,7 +394,7 @@ export default function App() {
             title: isRealTitle(candidate.title, candidate.url) ? candidate.title : metadata.title || candidate.title,
             description: metadata.description || candidate.description,
             imageUrl: metadata.image || candidate.imageUrl,
-            siteName: metadata.siteName || candidate.siteName,
+            siteName: metadata.siteName || candidate.siteName || hostOf(metadata.finalUrl || candidate.url),
             authorName: metadata.author || candidate.authorName,
             metadataFetchedAt: new Date().toISOString(),
             metadataError: '',
@@ -394,7 +430,7 @@ export default function App() {
       rawText: draft.rawText.trim() || undefined,
       description: draft.description.trim() || undefined,
       imageUrl: draft.imageUrl.trim() || undefined,
-      siteName: draft.siteName.trim() || undefined,
+      siteName: draft.siteName.trim() || hostOf(draft.finalUrl || normalizedUrl),
       authorName: draft.authorName.trim() || undefined,
       finalUrl: draft.finalUrl.trim() || undefined,
       metadataFetchedAt: draft.description || draft.imageUrl || draft.siteName ? new Date().toISOString() : undefined,
@@ -429,17 +465,18 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const imported = JSON.parse(String(reader.result)) as FavoriteItem[];
+        const imported = JSON.parse(String(reader.result)) as Partial<FavoriteItem>[];
         if (!Array.isArray(imported)) return;
 
         const byUrl = new Map(items.map((item) => [item.url, item]));
-        for (const item of imported) {
-          if (!item.url || !item.id) continue;
+        for (const rawItem of imported) {
+          const item = normalizeImportedItem({ ...rawItem, sourceAction: rawItem.sourceAction || 'imported' });
+          if (!item) continue;
           byUrl.set(item.url, item);
         }
         setItems(Array.from(byUrl.values()));
       } catch {
-        alert('匯入失敗：這不是有效的 Favorite Vault JSON。');
+        alert('匯入失敗：JSON 格式無法解析。');
       } finally {
         event.target.value = '';
       }
@@ -448,299 +485,484 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero-card">
-        <div className="hero-copy">
-          <p className="eyebrow">Personal collection PWA</p>
-          <h1>Favorite Vault</h1>
-          <p>
-            把 Threads、IG、FB、YouTube、Bilibili 這些平台上你順手收藏或按愛心的內容，先用分享連結集中起來。
-            現在會嘗試抓標題、描述、縮圖和站名，至少不要只留一堆網址屍體。
-          </p>
-        </div>
-        <div className="hero-actions">
-          <button className="primary-button" type="button" onClick={openComposer}>
-            ＋ 新增收藏
-          </button>
-          {installPrompt && (
-            <button className="ghost-button" type="button" onClick={handleInstall}>
-              安裝成 App
-            </button>
-          )}
-        </div>
-      </section>
+    <div className="app">
+      <div className="container">
+        <AppHeader canInstall={Boolean(installPrompt)} onInstall={handleInstall} onAdd={openComposer} />
 
-      {items.length > 0 && (
-        <section className="insight-card">
-          <div>
-            <p className="eyebrow">AI-ready profile</p>
-            <h2>個人化資料正在長出來</h2>
-            <p>
-              已解析 {aiSeed.metadataCount} / {items.length} 筆 metadata。
-              {aiSeed.topPlatform ? ` 最近偏多來自 ${aiSeed.topPlatform}。` : ''}
-              {aiSeed.topTags.length > 0 ? ` 常見標籤：${aiSeed.topTags.join('、')}。` : ' 加一點標籤，之後 AI 才不會像算命仙一樣亂猜。'}
-            </p>
-          </div>
-        </section>
-      )}
+        <VaultProfileCard profile={profile} />
 
-      <section className="toolbar-card">
-        <label className="search-box">
-          <span>搜尋</span>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜尋標題、描述、網址、筆記、標籤..."
-          />
-        </label>
+        <StatChips total={items.length} counts={platformCounts} />
 
-        <label className="select-box">
-          <span>平台</span>
-          <select value={platformFilter} onChange={(event) => setPlatformFilter(event.target.value as Platform | 'all')}>
-            <option value="all">全部</option>
-            {Object.entries(platformLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <Toolbar
+          query={query}
+          onQuery={setQuery}
+          platformFilter={platformFilter}
+          onPlatform={setPlatformFilter}
+          counts={platformCounts}
+          onExport={exportJson}
+          onImportClick={() => importInputRef.current?.click()}
+        />
+        <input ref={importInputRef} className="hidden-input" type="file" accept="application/json,.json" onChange={handleImportFile} />
 
-        <div className="toolbar-actions">
-          <button type="button" onClick={exportJson} disabled={items.length === 0}>
-            匯出 JSON
-          </button>
-          <button type="button" onClick={() => importInputRef.current?.click()}>
-            匯入 JSON
-          </button>
-          <input ref={importInputRef} className="hidden-input" type="file" accept="application/json" onChange={handleImportFile} />
-        </div>
-      </section>
-
-      <section className="stats-grid" aria-label="收藏統計">
-        <article>
-          <strong>{items.length}</strong>
-          <span>總收藏</span>
-        </article>
-        {Object.entries(platformLabels).map(([platform, label]) => (
-          <article key={platform}>
-            <strong>{stats[platform as Platform]}</strong>
-            <span>{label}</span>
-          </article>
-        ))}
-      </section>
-
-      {allTags.length > 0 && (
-        <section className="tag-cloud" aria-label="標籤">
-          {allTags.map((tag) => (
-            <button key={tag} type="button" onClick={() => setQuery(tag)}>
-              #{tag}
-            </button>
-          ))}
-        </section>
-      )}
-
-      <section className="content-grid">
         {filteredItems.length === 0 ? (
-          <div className="empty-state">
-            <h2>還沒有東西，收藏庫空得像平台 API 的良心。</h2>
-            <p>先按「新增收藏」貼一個連結。安裝成 PWA 後，手機分享選單也可以直接丟進來。</p>
-          </div>
+          <EmptyState hasItems={items.length > 0} onAdd={openComposer} />
         ) : (
-          filteredItems.map((item) => (
-            <article className="item-card" key={item.id}>
-              {item.imageUrl && (
-                <a className="thumbnail-link" href={item.url} target="_blank" rel="noreferrer" aria-label={`開啟 ${item.title}`}>
-                  <img src={item.imageUrl} alt="" loading="lazy" />
-                </a>
-              )}
-              <div className="item-card-body">
-                <div className="item-card-header">
-                  <span className={`platform-pill platform-${item.platform}`}>{platformLabels[item.platform]}</span>
-                  <span className="date-text">{formatDate(item.createdAt)}</span>
-                </div>
-                <h2>{item.title}</h2>
-                <a href={item.url} target="_blank" rel="noreferrer">
-                  {item.finalUrl || item.url}
-                </a>
-                {(item.siteName || item.authorName) && (
-                  <p className="meta-text">
-                    {[item.siteName, item.authorName].filter(Boolean).join(' · ')}
-                  </p>
-                )}
-                {item.description && <p className="description-text">{item.description}</p>}
-                {item.note && <p className="note-text">{item.note}</p>}
-                {item.metadataError && <p className="error-text">解析失敗：{item.metadataError}</p>}
-                {(item.description || item.imageUrl || item.siteName || item.authorName || item.finalUrl || item.metadataFetchedAt) && (
-                  <details className="metadata-details">
-                    <summary>查看 metadata</summary>
-                    <dl>
-                      <div>
-                        <dt>title</dt>
-                        <dd>{item.title || '無'}</dd>
-                      </div>
-                      <div>
-                        <dt>description</dt>
-                        <dd>{item.description || '無'}</dd>
-                      </div>
-                      <div>
-                        <dt>siteName</dt>
-                        <dd>{item.siteName || '無'}</dd>
-                      </div>
-                      <div>
-                        <dt>author</dt>
-                        <dd>{item.authorName || '無'}</dd>
-                      </div>
-                      <div>
-                        <dt>image</dt>
-                        <dd>{item.imageUrl || '無'}</dd>
-                      </div>
-                      <div>
-                        <dt>finalUrl</dt>
-                        <dd>{item.finalUrl || item.url}</dd>
-                      </div>
-                    </dl>
-                  </details>
-                )}
-                {item.tags.length > 0 && (
-                  <div className="item-tags">
-                    {item.tags.map((tag) => (
-                      <button key={tag} type="button" onClick={() => setQuery(tag)}>
-                        #{tag}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div className="item-footer">
-                  <span>{item.sourceAction === 'share-target' ? '分享匯入' : item.sourceAction === 'imported' ? '檔案匯入' : '手動新增'}</span>
-                  <div className="item-actions">
-                    <button type="button" onClick={() => enrichExistingItem(item)}>
-                      解析
-                    </button>
-                    <button type="button" onClick={() => removeItem(item.id)}>
-                      刪除
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </article>
-          ))
+          <ul className="item-grid" aria-label="收藏清單">
+            {filteredItems.map((item) => (
+              <ItemCard key={item.id} item={item} onDelete={() => removeItem(item.id)} onReparse={() => enrichExistingItem(item)} />
+            ))}
+          </ul>
         )}
-      </section>
+      </div>
 
       {isComposerOpen && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setIsComposerOpen(false)}>
-          <form className="composer" onSubmit={handleSubmit} onClick={(event) => event.stopPropagation()}>
-            <div className="composer-header">
-              <div>
-                <p className="eyebrow">Save item</p>
-                <h2>新增收藏</h2>
-              </div>
-              <button type="button" className="icon-button" onClick={() => setIsComposerOpen(false)} aria-label="關閉">
-                ×
-              </button>
-            </div>
-
-            <label>
-              <span>網址</span>
-              <input
-                required
-                value={draft.url}
-                onChange={(event) => updateDraft('url', event.target.value)}
-                placeholder="貼上分享連結，例如 YouTube / Threads / Bilibili"
-              />
-            </label>
-
-            <div className="metadata-actions">
-              <button type="button" onClick={fetchMetadataForDraft} disabled={isMetadataLoading || !draft.url.trim()}>
-                {isMetadataLoading ? '解析中...' : '解析連結'}
-              </button>
-              <span>會嘗試抓標題、描述、縮圖、站名。被平台擋就沒輒，平台不是你家倉庫。</span>
-            </div>
-
-            <label>
-              <span>標題</span>
-              <input
-                value={draft.title}
-                onChange={(event) => updateDraft('title', event.target.value)}
-                placeholder="按解析連結後會自動帶入"
-              />
-            </label>
-
-            {(draft.description || draft.imageUrl || draft.siteName || draft.authorName || draft.finalUrl || draft.metadataError) && (
-              <section className="metadata-preview">
-                {draft.imageUrl && <img src={draft.imageUrl} alt="" />}
-                <div>
-                  <p className="eyebrow">Metadata</p>
-                  {draft.siteName && <p className="meta-text">{draft.siteName}</p>}
-                  {draft.description && <p>{draft.description}</p>}
-                  {draft.metadataError && <p className="error-text">{draft.metadataError}</p>}
-                  <dl className="metadata-preview-list">
-                    <div>
-                      <dt>title</dt>
-                      <dd>{draft.title || '無'}</dd>
-                    </div>
-                    <div>
-                      <dt>description</dt>
-                      <dd>{draft.description || '無'}</dd>
-                    </div>
-                    <div>
-                      <dt>siteName</dt>
-                      <dd>{draft.siteName || '無'}</dd>
-                    </div>
-                    <div>
-                      <dt>author</dt>
-                      <dd>{draft.authorName || '無'}</dd>
-                    </div>
-                    <div>
-                      <dt>image</dt>
-                      <dd>{draft.imageUrl || '無'}</dd>
-                    </div>
-                    <div>
-                      <dt>finalUrl</dt>
-                      <dd>{draft.finalUrl || draft.url}</dd>
-                    </div>
-                  </dl>
-                </div>
-              </section>
-            )}
-
-            <label>
-              <span>標籤</span>
-              <input
-                value={draft.tags}
-                onChange={(event) => updateDraft('tags', event.target.value)}
-                placeholder="AI, 旅遊, 搞笑, 顯卡"
-              />
-            </label>
-
-            <label>
-              <span>筆記</span>
-              <textarea
-                value={draft.note}
-                onChange={(event) => updateDraft('note', event.target.value)}
-                placeholder="你為什麼存這個？不要讓未來的你像考古學家一樣痛苦。"
-              />
-            </label>
-
-            {draft.rawText && (
-              <details className="raw-share">
-                <summary>分享原文</summary>
-                <p>{draft.rawText}</p>
-              </details>
-            )}
-
-            <div className="composer-actions">
-              <button type="button" onClick={() => setIsComposerOpen(false)}>
-                取消
-              </button>
-              <button className="primary-button" type="submit">
-                存起來
-              </button>
-            </div>
-          </form>
-        </div>
+        <AddItemModal
+          draft={draft}
+          isParsing={isMetadataLoading}
+          onUpdate={updateDraft}
+          onParse={fetchMetadataForDraft}
+          onClose={() => setIsComposerOpen(false)}
+          onSubmit={handleSubmit}
+        />
       )}
-    </main>
+    </div>
+  );
+}
+
+function AppHeader({
+  canInstall,
+  onInstall,
+  onAdd,
+}: {
+  canInstall: boolean;
+  onInstall: () => void;
+  onAdd: () => void;
+}) {
+  return (
+    <header className="app-header">
+      <div className="app-header__text">
+        <h1 className="app-title">Favorite Vault</h1>
+        <p className="app-subtitle">把散落在各平台的收藏，整理成自己的私人知識庫。</p>
+      </div>
+      <div className="app-header__actions">
+        <button className="btn btn--primary" type="button" onClick={onAdd}>
+          新增收藏
+        </button>
+        {canInstall && (
+          <button className="btn btn--ghost" type="button" onClick={onInstall}>
+            安裝 App
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
+function VaultProfileCard({
+  profile,
+}: {
+  profile: {
+    parsed: number;
+    total: number;
+    topPlatform: Platform | '';
+    frequentTags: string[];
+  };
+}) {
+  return (
+    <section className="profile-card" aria-label="收藏輪廓">
+      <div className="profile-card__head">
+        <span className="profile-card__eyebrow">收藏輪廓</span>
+      </div>
+      <div className="profile-card__rows">
+        <div className="profile-row">
+          <span className="profile-row__label">Parsed metadata</span>
+          <span className="profile-row__value">
+            {profile.parsed} / {profile.total}
+          </span>
+        </div>
+        <div className="profile-row">
+          <span className="profile-row__label">Top platform</span>
+          <span className="profile-row__value">{profile.topPlatform ? PLATFORM_LABEL[profile.topPlatform] : '—'}</span>
+        </div>
+        <div className="profile-row profile-row--tags">
+          <span className="profile-row__label">Frequent tags</span>
+          <span className="profile-row__value">
+            {profile.frequentTags.length > 0 ? (
+              <span className="tag-row">
+                {profile.frequentTags.map((tag) => (
+                  <span className="tag tag--soft" key={tag}>
+                    #{tag}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              '—'
+            )}
+          </span>
+        </div>
+      </div>
+      <p className="profile-card__hint">
+        這些 metadata 之後可以用來做摘要、語意搜尋和個人化推薦。你存的每一筆，都在累積一個 AI 能理解的個人資料庫。
+      </p>
+    </section>
+  );
+}
+
+function StatChips({ total, counts }: { total: number; counts: Record<Platform, number> }) {
+  return (
+    <div className="stat-chips" role="list" aria-label="收藏統計">
+      <div className="stat-chip stat-chip--total" role="listitem">
+        <span className="stat-chip__num">{total}</span>
+        <span className="stat-chip__label">總收藏</span>
+      </div>
+      {PLATFORM_ORDER.filter((platform) => counts[platform] > 0).map((platform) => (
+        <div className="stat-chip" role="listitem" key={platform}>
+          <span className="stat-chip__num">{counts[platform]}</span>
+          <span className="stat-chip__label">{PLATFORM_LABEL[platform]}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Toolbar({
+  query,
+  onQuery,
+  platformFilter,
+  onPlatform,
+  counts,
+  onExport,
+  onImportClick,
+}: {
+  query: string;
+  onQuery: (value: string) => void;
+  platformFilter: Platform | 'all';
+  onPlatform: (platform: Platform | 'all') => void;
+  counts: Record<Platform, number>;
+  onExport: () => void;
+  onImportClick: () => void;
+}) {
+  return (
+    <div className="toolbar">
+      <div className="toolbar__search">
+        <svg className="toolbar__search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+          <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+        <input
+          type="search"
+          className="toolbar__search-input"
+          placeholder="搜尋標題、描述、筆記、標籤、作者…"
+          value={query}
+          onChange={(event) => onQuery(event.target.value)}
+          aria-label="搜尋收藏"
+        />
+      </div>
+
+      <div className="toolbar__filters" role="tablist" aria-label="平台篩選">
+        <button className={`chip-btn ${platformFilter === 'all' ? 'is-active' : ''}`} type="button" onClick={() => onPlatform('all')} aria-pressed={platformFilter === 'all'}>
+          全部
+        </button>
+        {PLATFORM_ORDER.filter((platform) => counts[platform] > 0).map((platform) => (
+          <button
+            key={platform}
+            className={`chip-btn ${platformFilter === platform ? 'is-active' : ''}`}
+            type="button"
+            onClick={() => onPlatform(platform)}
+            aria-pressed={platformFilter === platform}
+          >
+            {PLATFORM_LABEL[platform]}
+          </button>
+        ))}
+      </div>
+
+      <div className="toolbar__io">
+        <button className="btn btn--quiet" type="button" onClick={onImportClick}>
+          匯入 JSON
+        </button>
+        <button className="btn btn--quiet" type="button" onClick={onExport}>
+          匯出 JSON
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ItemCard({
+  item,
+  onDelete,
+  onReparse,
+}: {
+  item: FavoriteItem;
+  onDelete: () => void;
+  onReparse: () => Promise<void>;
+}) {
+  const [parsing, setParsing] = useState(false);
+  const link = item.finalUrl || item.url;
+
+  const handleReparse = async () => {
+    setParsing(true);
+    await onReparse();
+    setParsing(false);
+  };
+
+  return (
+    <li className="card">
+      <a
+        className={`card__thumb ${item.imageUrl ? '' : 'card__thumb--fallback'}`}
+        href={link}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`開啟收藏：${item.title || hostOf(link)}`}
+      >
+        {item.imageUrl ? (
+          <img src={item.imageUrl} alt="" loading="lazy" />
+        ) : (
+          <span className="card__thumb-letter">{(item.siteName || item.title || hostOf(link) || '•').charAt(0).toUpperCase()}</span>
+        )}
+        <span className={`badge badge--${item.platform}`}>{PLATFORM_LABEL[item.platform]}</span>
+      </a>
+
+      <div className="card__body">
+        <div className="card__meta-top">
+          <span className="card__site">{item.siteName || hostOf(link)}</span>
+          {item.authorName && <span className="card__author">· {item.authorName}</span>}
+        </div>
+
+        <h3 className="card__title">
+          <a href={link} target="_blank" rel="noopener noreferrer">
+            {item.title || hostOf(link) || '未命名收藏'}
+          </a>
+        </h3>
+
+        {item.description && <p className="card__desc">{item.description}</p>}
+
+        {item.note && (
+          <p className="card__note">
+            <span className="card__note-label">筆記</span>
+            {item.note}
+          </p>
+        )}
+
+        {item.tags.length > 0 && (
+          <div className="tag-row">
+            {item.tags.map((tag) => (
+              <button className="tag tag-button" type="button" key={tag}>
+                #{tag}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {item.metadataError && (
+          <div className="card__error" role="status">
+            <span className="card__error-dot" aria-hidden="true" />
+            {item.metadataError}
+          </div>
+        )}
+
+        <div className="card__foot">
+          <a className="card__url" href={link} target="_blank" rel="noopener noreferrer">
+            {hostOf(link)}
+          </a>
+          <time className="card__date">{formatDate(item.createdAt)}</time>
+        </div>
+
+        <div className="card__actions">
+          <button className="btn btn--quiet btn--sm" type="button" onClick={handleReparse} disabled={parsing}>
+            {parsing ? '解析中…' : '解析'}
+          </button>
+          <button className="btn btn--danger btn--sm" type="button" onClick={onDelete}>
+            刪除
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function EmptyState({ hasItems, onAdd }: { hasItems: boolean; onAdd: () => void }) {
+  if (hasItems) {
+    return (
+      <div className="empty empty--filtered">
+        <p className="empty__title">沒有符合的收藏</p>
+        <p className="empty__text">換個關鍵字或切換平台篩選試試。</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="empty">
+      <div className="empty__mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="48" height="48">
+          <rect x="8" y="14" width="32" height="26" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
+          <path d="M8 20 H40" stroke="currentColor" strokeWidth="2" />
+          <path d="M16 14 V10 a2 2 0 0 1 2-2 h12 a2 2 0 0 1 2 2 v4" fill="none" stroke="currentColor" strokeWidth="2" />
+          <line x1="20" y1="28" x2="28" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      </div>
+      <p className="empty__title">你的資料盒還是空的</p>
+      <p className="empty__text">先存一個連結，讓這裡開始長成你的私人資料庫。</p>
+      <button className="btn btn--primary" type="button" onClick={onAdd}>
+        新增收藏
+      </button>
+    </div>
+  );
+}
+
+function AddItemModal({
+  draft,
+  isParsing,
+  onUpdate,
+  onParse,
+  onClose,
+  onSubmit,
+}: {
+  draft: DraftState;
+  isParsing: boolean;
+  onUpdate: (field: keyof DraftState, value: string) => void;
+  onParse: () => Promise<void>;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+
+    document.addEventListener('keydown', handleKey);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.body.style.overflow = '';
+    };
+  }, [onClose]);
+
+  const previewUrl = draft.finalUrl || draft.url;
+  const hasPreview = draft.description || draft.imageUrl || draft.siteName || draft.title || draft.metadataError;
+
+  return (
+    <div className="sheet-overlay" role="presentation" onClick={onClose}>
+      <form className="sheet" role="dialog" aria-modal="true" aria-label="新增收藏" onClick={(event) => event.stopPropagation()} onSubmit={onSubmit}>
+        <div className="sheet__grip" aria-hidden="true" />
+        <div className="sheet__head">
+          <h2 className="sheet__title">新增收藏</h2>
+          <button className="sheet__close" type="button" onClick={onClose} aria-label="關閉">
+            ×
+          </button>
+        </div>
+
+        <div className="sheet__body">
+          <div className="field">
+            <label className="field__label" htmlFor="url-input">
+              連結網址
+            </label>
+            <div className="field__url">
+              <input
+                id="url-input"
+                className="input"
+                required
+                type="url"
+                inputMode="url"
+                placeholder="貼上 YouTube / IG / Threads / Bilibili / 任意連結"
+                value={draft.url}
+                onChange={(event) => onUpdate('url', event.target.value)}
+              />
+              <button className="btn btn--primary" type="button" onClick={onParse} disabled={!draft.url.trim() || isParsing}>
+                {isParsing ? '解析中…' : '解析連結'}
+              </button>
+            </div>
+            <p className="field__hint">貼上 → 解析 → 預覽 metadata → 補標籤與筆記 → 存起來</p>
+          </div>
+
+          {isParsing && (
+            <div className="preview preview--loading">
+              <div className="preview__thumb skeleton" />
+              <div className="preview__lines">
+                <div className="skeleton skeleton--line" />
+                <div className="skeleton skeleton--line short" />
+              </div>
+            </div>
+          )}
+
+          {!isParsing && hasPreview && (
+            <div className="preview">
+              {draft.imageUrl ? (
+                <div className="preview__thumb">
+                  <img src={draft.imageUrl} alt="" />
+                </div>
+              ) : (
+                <div className="preview__thumb preview__thumb--fallback">
+                  <span>{(draft.siteName || hostOf(previewUrl) || '•').charAt(0).toUpperCase()}</span>
+                </div>
+              )}
+              <div className="preview__info">
+                {(draft.siteName || hostOf(previewUrl)) && <span className="preview__site">{draft.siteName || hostOf(previewUrl)}</span>}
+                <span className="preview__title">{draft.title || '（無標題）'}</span>
+                {draft.description && <span className="preview__desc">{draft.description}</span>}
+                <span className="preview__url">{hostOf(previewUrl)}</span>
+                {draft.metadataError && <span className="preview__error">{draft.metadataError}</span>}
+              </div>
+            </div>
+          )}
+
+          <div className="field">
+            <label className="field__label" htmlFor="title-input">
+              標題
+            </label>
+            <input
+              id="title-input"
+              className="input"
+              placeholder="自訂標題，可留空使用解析結果"
+              value={draft.title}
+              onChange={(event) => onUpdate('title', event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor="tags-input">
+              標籤
+            </label>
+            <input
+              id="tags-input"
+              className="input"
+              placeholder="用空白或逗號分隔，例：AI 工具 影片"
+              value={draft.tags}
+              onChange={(event) => onUpdate('tags', event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor="note-input">
+              筆記
+            </label>
+            <textarea
+              id="note-input"
+              className="input textarea"
+              rows={3}
+              placeholder="為什麼想收藏？之後想做什麼？"
+              value={draft.note}
+              onChange={(event) => onUpdate('note', event.target.value)}
+            />
+          </div>
+
+          {draft.rawText && (
+            <details className="raw-details">
+              <summary>分享原始文字</summary>
+              <pre className="raw-details__text">{draft.rawText}</pre>
+            </details>
+          )}
+        </div>
+
+        <div className="sheet__foot">
+          <button className="btn btn--quiet" type="button" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn btn--primary" type="submit" disabled={!draft.url.trim()}>
+            存到資料盒
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
