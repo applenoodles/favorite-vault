@@ -28,6 +28,7 @@ interface FavoriteItem {
   canonicalUrl?: string;
   summary?: string;
   category?: string;
+  notionPageId?: string;
 }
 
 interface DraftState {
@@ -143,8 +144,10 @@ const metadataErrorLabels: Record<string, string> = {
   server_non_json: '解析服務回了非 JSON，通常是平台或 Cloudflare 中途炸了。',
   platform_fetch_failed: '平台資料抓取失敗，這個站可能擋住伺服器請求。',
   platform_login_wall: '這個平台通常需要登入或阻擋伺服器抓取。請用分享原文、手動貼內文，或之後改用瀏覽器外掛抓當前頁面。',
-  missing_d1_binding: 'Cloudflare D1 還沒綁定 FAVORITE_DB。',
-  missing_vault_key: 'vault key 太短或沒有送出。',
+  missing_notion_config: 'Notion 還沒設定 NOTION_TOKEN / NOTION_DATABASE_ID。',
+  object_not_found: 'Notion 找不到 database。通常是 database 沒分享給 integration。',
+  unauthorized: 'Notion token 無效或權限不足。',
+  validation_error: 'Notion database 欄位名稱或型別不符合。',
   invalid_json: '雲端 API 收到無效 JSON。',
   invalid_item: '雲端 API 收到無效收藏資料。',
 };
@@ -358,6 +361,7 @@ function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null
     canonicalUrl: item.canonicalUrl,
     summary: item.summary,
     category: item.category,
+    notionPageId: item.notionPageId,
   };
 }
 
@@ -396,36 +400,32 @@ function saveVaultKey(key: string) {
   localStorage.setItem(VAULT_KEY_STORAGE, key.trim());
 }
 
-async function requestCloudItems(vaultKey: string) {
-  const response = await fetch('/api/items', {
-    headers: { 'x-vault-key': vaultKey },
-  });
+async function requestCloudItems(_source: string) {
+  const response = await fetch('/api/notion-items');
   const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_load_${response.status}`);
+  if (!response.ok || !data.ok) throw new Error(data.error || `notion_load_${response.status}`);
   return (Array.isArray(data.items) ? data.items : []).map(normalizeImportedItem).filter(Boolean) as FavoriteItem[];
 }
 
-async function upsertCloudItem(vaultKey: string, item: FavoriteItem) {
-  const response = await fetch('/api/items', {
+async function upsertCloudItem(_source: string, item: FavoriteItem) {
+  const response = await fetch('/api/notion-items', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-vault-key': vaultKey,
     },
     body: JSON.stringify({ item }),
   });
   const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_save_${response.status}`);
+  if (!response.ok || !data.ok) throw new Error(data.error || `notion_save_${response.status}`);
   return normalizeImportedItem(data.item) || item;
 }
 
-async function deleteCloudItem(vaultKey: string, id: string) {
-  const response = await fetch(`/api/items?id=${encodeURIComponent(id)}`, {
+async function deleteCloudItem(_source: string, id: string) {
+  const response = await fetch(`/api/notion-items?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
-    headers: { 'x-vault-key': vaultKey },
   });
   const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_delete_${response.status}`);
+  if (!response.ok || !data.ok) throw new Error(data.error || `notion_delete_${response.status}`);
 }
 
 function fallbackTitle(url: string) {
@@ -583,9 +583,8 @@ export default function App() {
   const [platformFilter, setPlatformFilter] = useState<Platform | 'all'>('all');
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
-  const [vaultKey, setVaultKey] = useState(() => loadVaultKey());
-  const [vaultKeyDraft, setVaultKeyDraft] = useState(() => loadVaultKey());
-  const [cloudStatus, setCloudStatus] = useState(vaultKey ? '雲端模式待同步' : '本機模式');
+  const [vaultKey] = useState('notion');
+  const [cloudStatus, setCloudStatus] = useState('Notion 待同步');
   const [isCloudLoading, setIsCloudLoading] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const llmImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -605,22 +604,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!vaultKey) return;
-    void loadFromCloud(vaultKey, { mergeLocal: true });
-  }, [vaultKey]);
+    void loadFromCloud({ mergeLocal: true });
+  }, []);
 
-  async function loadFromCloud(key = vaultKey, options: { mergeLocal?: boolean } = {}) {
-    if (!key.trim()) {
-      setCloudStatus('請先輸入 vault key');
-      return;
-    }
-
+  async function loadFromCloud(options: { mergeLocal?: boolean } = {}) {
     setIsCloudLoading(true);
-    setCloudStatus('雲端同步中...');
+    setCloudStatus('Notion 同步中...');
     try {
-      const remoteItems = await requestCloudItems(key.trim());
+      const remoteItems = await requestCloudItems(vaultKey);
       setItems((current) => (options.mergeLocal ? mergeItems(current, remoteItems) : remoteItems));
-      setCloudStatus(`已同步 ${remoteItems.length} 筆雲端收藏`);
+      setCloudStatus(`已同步 ${remoteItems.length} 筆 Notion 收藏`);
     } catch (error) {
       setCloudStatus(`雲端讀取失敗：${metadataErrorText((error as Error).message)}`);
     } finally {
@@ -628,33 +621,14 @@ export default function App() {
     }
   }
 
-  async function saveCloudSettings() {
-    const key = vaultKeyDraft.trim();
-    if (!key) {
-      setVaultKey('');
-      saveVaultKey('');
-      setCloudStatus('本機模式');
-      return;
-    }
-
-    saveVaultKey(key);
-    setVaultKey(key);
-    await loadFromCloud(key, { mergeLocal: true });
-  }
-
   async function pushLocalToCloud() {
-    if (!vaultKey.trim()) {
-      setCloudStatus('請先設定 vault key');
-      return;
-    }
-
     setIsCloudLoading(true);
-    setCloudStatus('本機資料上傳中...');
+    setCloudStatus('本機資料上傳到 Notion 中...');
     try {
       for (const item of items) {
-        await upsertCloudItem(vaultKey.trim(), item);
+        await upsertCloudItem(vaultKey, item);
       }
-      setCloudStatus(`已上傳 ${items.length} 筆本機收藏`);
+      setCloudStatus(`已上傳 ${items.length} 筆本機收藏到 Notion`);
     } catch (error) {
       setCloudStatus(`上傳失敗：${metadataErrorText((error as Error).message)}`);
     } finally {
@@ -1021,13 +995,9 @@ export default function App() {
         <AppHeader canInstall={Boolean(installPrompt)} onInstall={handleInstall} onAdd={openComposer} />
 
         <CloudSyncPanel
-          vaultKeyDraft={vaultKeyDraft}
-          vaultKey={vaultKey}
           cloudStatus={cloudStatus}
           isCloudLoading={isCloudLoading}
-          onVaultKeyDraft={setVaultKeyDraft}
-          onSaveSettings={saveCloudSettings}
-          onPull={() => loadFromCloud(vaultKey, { mergeLocal: false })}
+          onPull={() => loadFromCloud({ mergeLocal: false })}
           onPush={pushLocalToCloud}
         />
 
@@ -1075,47 +1045,29 @@ export default function App() {
 }
 
 function CloudSyncPanel({
-  vaultKeyDraft,
-  vaultKey,
   cloudStatus,
   isCloudLoading,
-  onVaultKeyDraft,
-  onSaveSettings,
   onPull,
   onPush,
 }: {
-  vaultKeyDraft: string;
-  vaultKey: string;
   cloudStatus: string;
   isCloudLoading: boolean;
-  onVaultKeyDraft: (value: string) => void;
-  onSaveSettings: () => Promise<void>;
   onPull: () => Promise<void>;
   onPush: () => Promise<void>;
 }) {
   return (
     <section className="cloud-card" aria-label="雲端同步">
       <div className="cloud-card__copy">
-        <span className="cloud-card__eyebrow">Cloud sync</span>
-        <strong>{vaultKey ? '雲端 vault 已啟用' : '目前是本機模式'}</strong>
+        <span className="cloud-card__eyebrow">Notion sync</span>
+        <strong>Notion database</strong>
         <p>{cloudStatus}</p>
       </div>
-      <div className="cloud-card__controls">
-        <input
-          className="input cloud-card__input"
-          type="password"
-          placeholder="設定你的私人 vault key，至少 8 字"
-          value={vaultKeyDraft}
-          onChange={(event) => onVaultKeyDraft(event.target.value)}
-        />
-        <button className="btn btn--primary" type="button" onClick={onSaveSettings} disabled={isCloudLoading}>
-          儲存 key / 同步
+      <div className="cloud-card__controls cloud-card__controls--simple">
+        <button className="btn btn--primary" type="button" onClick={onPull} disabled={isCloudLoading}>
+          從 Notion 載入
         </button>
-        <button className="btn btn--quiet" type="button" onClick={onPull} disabled={isCloudLoading || !vaultKey}>
-          從雲端載入
-        </button>
-        <button className="btn btn--quiet" type="button" onClick={onPush} disabled={isCloudLoading || !vaultKey}>
-          上傳本機
+        <button className="btn btn--quiet" type="button" onClick={onPush} disabled={isCloudLoading}>
+          上傳本機到 Notion
         </button>
       </div>
     </section>

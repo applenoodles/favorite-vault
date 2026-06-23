@@ -250,6 +250,11 @@ button:disabled {
   min-width: 0;
 }
 
+.cloud-card__controls--simple {
+  grid-template-columns: auto auto;
+  justify-content: end;
+}
+
 .profile-card {
   background: var(--bg-raised);
   border: 1px solid var(--line);

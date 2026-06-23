@@ -13,7 +13,7 @@
 - 搜尋標題、描述、內文、網址、筆記、標籤
 - 平台統計
 - AI-ready profile 小摘要
-- Cloudflare D1 雲端同步，使用私人 vault key
+- Notion database 雲端同步
 - LLM 批次整理包匯出 / 匯入，不需要內建 API key
 - JSON 匯出 / 匯入
 - 離線 fallback service worker
@@ -103,19 +103,23 @@ GET /api/metadata?url=https%3A%2F%2Fexample.com
 
 注意：Instagram、Threads、Facebook、Bilibili 等平台可能會擋未登入或機器人請求，所以不是每個連結都能完整解析。一般文章、部落格、文件頁通常比較容易抽出正文；需要登入、全 JS render、反爬嚴重的平台就會很破。這不是前端爛，是平台把門焊死。
 
-## Cloud sync
+## Notion sync
 
-Cloud sync uses Cloudflare D1 through `/api/items`.
+Cloud sync now uses Notion through `/api/notion-items`.
 
-Read setup details in [`CLOUD_SYNC.md`](./CLOUD_SYNC.md).
+Read setup details in [`NOTION_SYNC.md`](./NOTION_SYNC.md).
 
 Quick setup:
 
-1. Create a Cloudflare D1 database named `favorite-vault`
-2. Run `migrations/0001_favorite_items.sql`
-3. Bind it to the Pages project as `FAVORITE_DB`
-4. Redeploy
-5. Enter the same vault key on desktop and phone
+1. Create a Notion internal integration
+2. Create a Notion database using the property schema in `NOTION_SYNC.md`
+3. Share the database with the integration
+4. Add Cloudflare Pages env vars:
+   - `NOTION_TOKEN`
+   - `NOTION_DATABASE_ID`
+5. Redeploy
+
+D1 files are kept only as an optional future backend path. The normal workflow should use Notion.
 
 ## LLM batch workflow
 
