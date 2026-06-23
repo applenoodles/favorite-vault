@@ -13,6 +13,7 @@ interface FavoriteItem {
   platform: Platform;
   sourceAction: SourceAction;
   createdAt: string;
+  updatedAt?: string;
   rawText?: string;
   description?: string;
   imageUrl?: string;
@@ -87,6 +88,7 @@ type BeforeInstallPromptEvent = Event & {
 
 const STORAGE_KEY = 'favorite-vault-items-v2';
 const LEGACY_STORAGE_KEY = 'favorite-vault-items-v1';
+const VAULT_KEY_STORAGE = 'favorite-vault-cloud-key-v1';
 
 const PLATFORM_LABEL: Record<Platform, string> = {
   youtube: 'YouTube',
@@ -131,6 +133,10 @@ const metadataErrorLabels: Record<string, string> = {
   server_non_json: '解析服務回了非 JSON，通常是平台或 Cloudflare 中途炸了。',
   platform_fetch_failed: '平台資料抓取失敗，這個站可能擋住伺服器請求。',
   platform_login_wall: '這個平台通常需要登入或阻擋伺服器抓取。請用分享原文、手動貼內文，或之後改用瀏覽器外掛抓當前頁面。',
+  missing_d1_binding: 'Cloudflare D1 還沒綁定 FAVORITE_DB。',
+  missing_vault_key: 'vault key 太短或沒有送出。',
+  invalid_json: '雲端 API 收到無效 JSON。',
+  invalid_item: '雲端 API 收到無效收藏資料。',
 };
 
 function createId() {
@@ -327,6 +333,7 @@ function normalizeImportedItem(item: Partial<FavoriteItem>): FavoriteItem | null
     platform: item.platform || detectPlatform(url),
     sourceAction: item.sourceAction || 'imported',
     createdAt: item.createdAt || new Date().toISOString(),
+    updatedAt: item.updatedAt,
     rawText: item.rawText,
     description: item.description,
     imageUrl: item.imageUrl,
@@ -358,6 +365,57 @@ function loadItems(): FavoriteItem[] {
 
 function saveItems(items: FavoriteItem[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+}
+
+function mergeItems(localItems: FavoriteItem[], remoteItems: FavoriteItem[]) {
+  const byId = new Map<string, FavoriteItem>();
+  for (const item of [...localItems, ...remoteItems]) {
+    const previous = byId.get(item.id);
+    if (!previous || new Date(item.updatedAt || item.createdAt).getTime() >= new Date(previous.updatedAt || previous.createdAt).getTime()) {
+      byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function loadVaultKey() {
+  return localStorage.getItem(VAULT_KEY_STORAGE) || '';
+}
+
+function saveVaultKey(key: string) {
+  localStorage.setItem(VAULT_KEY_STORAGE, key.trim());
+}
+
+async function requestCloudItems(vaultKey: string) {
+  const response = await fetch('/api/items', {
+    headers: { 'x-vault-key': vaultKey },
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_load_${response.status}`);
+  return (Array.isArray(data.items) ? data.items : []).map(normalizeImportedItem).filter(Boolean) as FavoriteItem[];
+}
+
+async function upsertCloudItem(vaultKey: string, item: FavoriteItem) {
+  const response = await fetch('/api/items', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-vault-key': vaultKey,
+    },
+    body: JSON.stringify({ item }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_save_${response.status}`);
+  return normalizeImportedItem(data.item) || item;
+}
+
+async function deleteCloudItem(vaultKey: string, id: string) {
+  const response = await fetch(`/api/items?id=${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'x-vault-key': vaultKey },
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || `cloud_delete_${response.status}`);
 }
 
 function fallbackTitle(url: string) {
@@ -429,6 +487,10 @@ export default function App() {
   const [platformFilter, setPlatformFilter] = useState<Platform | 'all'>('all');
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
+  const [vaultKey, setVaultKey] = useState(() => loadVaultKey());
+  const [vaultKeyDraft, setVaultKeyDraft] = useState(() => loadVaultKey());
+  const [cloudStatus, setCloudStatus] = useState(vaultKey ? '雲端模式待同步' : '本機模式');
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -444,6 +506,64 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
+
+  useEffect(() => {
+    if (!vaultKey) return;
+    void loadFromCloud(vaultKey, { mergeLocal: true });
+  }, [vaultKey]);
+
+  async function loadFromCloud(key = vaultKey, options: { mergeLocal?: boolean } = {}) {
+    if (!key.trim()) {
+      setCloudStatus('請先輸入 vault key');
+      return;
+    }
+
+    setIsCloudLoading(true);
+    setCloudStatus('雲端同步中...');
+    try {
+      const remoteItems = await requestCloudItems(key.trim());
+      setItems((current) => (options.mergeLocal ? mergeItems(current, remoteItems) : remoteItems));
+      setCloudStatus(`已同步 ${remoteItems.length} 筆雲端收藏`);
+    } catch (error) {
+      setCloudStatus(`雲端讀取失敗：${metadataErrorText((error as Error).message)}`);
+    } finally {
+      setIsCloudLoading(false);
+    }
+  }
+
+  async function saveCloudSettings() {
+    const key = vaultKeyDraft.trim();
+    if (!key) {
+      setVaultKey('');
+      saveVaultKey('');
+      setCloudStatus('本機模式');
+      return;
+    }
+
+    saveVaultKey(key);
+    setVaultKey(key);
+    await loadFromCloud(key, { mergeLocal: true });
+  }
+
+  async function pushLocalToCloud() {
+    if (!vaultKey.trim()) {
+      setCloudStatus('請先設定 vault key');
+      return;
+    }
+
+    setIsCloudLoading(true);
+    setCloudStatus('本機資料上傳中...');
+    try {
+      for (const item of items) {
+        await upsertCloudItem(vaultKey.trim(), item);
+      }
+      setCloudStatus(`已上傳 ${items.length} 筆本機收藏`);
+    } catch (error) {
+      setCloudStatus(`上傳失敗：${metadataErrorText((error as Error).message)}`);
+    } finally {
+      setIsCloudLoading(false);
+    }
+  }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -629,7 +749,7 @@ export default function App() {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const normalizedUrl = normalizeUrl(draft.url || extractFirstUrl(draft.rawText));
@@ -648,6 +768,7 @@ export default function App() {
       platform: detectPlatform(normalizedUrl),
       sourceAction: draft.sourceAction,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       rawText: undefined,
       description: draft.description.trim() || undefined,
       imageUrl: draft.imageUrl.trim() || undefined,
@@ -667,10 +788,27 @@ export default function App() {
     setItems((current) => [item, ...current]);
     setDraft(EMPTY_DRAFT);
     setIsComposerOpen(false);
+
+    if (vaultKey.trim()) {
+      try {
+        const saved = await upsertCloudItem(vaultKey.trim(), item);
+        setItems((current) => current.map((candidate) => (candidate.id === item.id ? saved : candidate)));
+        setCloudStatus('已儲存到雲端');
+      } catch (error) {
+        setCloudStatus(`雲端儲存失敗：${metadataErrorText((error as Error).message)}`);
+      }
+    }
   }
 
-  function removeItem(id: string) {
+  async function removeItem(id: string) {
     setItems((current) => current.filter((item) => item.id !== id));
+    if (!vaultKey.trim()) return;
+    try {
+      await deleteCloudItem(vaultKey.trim(), id);
+      setCloudStatus('已從雲端刪除');
+    } catch (error) {
+      setCloudStatus(`雲端刪除失敗：${metadataErrorText((error as Error).message)}`);
+    }
   }
 
   async function handleInstall() {
@@ -716,6 +854,17 @@ export default function App() {
       <div className="container">
         <AppHeader canInstall={Boolean(installPrompt)} onInstall={handleInstall} onAdd={openComposer} />
 
+        <CloudSyncPanel
+          vaultKeyDraft={vaultKeyDraft}
+          vaultKey={vaultKey}
+          cloudStatus={cloudStatus}
+          isCloudLoading={isCloudLoading}
+          onVaultKeyDraft={setVaultKeyDraft}
+          onSaveSettings={saveCloudSettings}
+          onPull={() => loadFromCloud(vaultKey, { mergeLocal: false })}
+          onPush={pushLocalToCloud}
+        />
+
         <VaultProfileCard profile={profile} />
 
         <StatChips total={items.length} counts={platformCounts} />
@@ -753,6 +902,54 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+function CloudSyncPanel({
+  vaultKeyDraft,
+  vaultKey,
+  cloudStatus,
+  isCloudLoading,
+  onVaultKeyDraft,
+  onSaveSettings,
+  onPull,
+  onPush,
+}: {
+  vaultKeyDraft: string;
+  vaultKey: string;
+  cloudStatus: string;
+  isCloudLoading: boolean;
+  onVaultKeyDraft: (value: string) => void;
+  onSaveSettings: () => Promise<void>;
+  onPull: () => Promise<void>;
+  onPush: () => Promise<void>;
+}) {
+  return (
+    <section className="cloud-card" aria-label="雲端同步">
+      <div className="cloud-card__copy">
+        <span className="cloud-card__eyebrow">Cloud sync</span>
+        <strong>{vaultKey ? '雲端 vault 已啟用' : '目前是本機模式'}</strong>
+        <p>{cloudStatus}</p>
+      </div>
+      <div className="cloud-card__controls">
+        <input
+          className="input cloud-card__input"
+          type="password"
+          placeholder="設定你的私人 vault key，至少 8 字"
+          value={vaultKeyDraft}
+          onChange={(event) => onVaultKeyDraft(event.target.value)}
+        />
+        <button className="btn btn--primary" type="button" onClick={onSaveSettings} disabled={isCloudLoading}>
+          儲存 key / 同步
+        </button>
+        <button className="btn btn--quiet" type="button" onClick={onPull} disabled={isCloudLoading || !vaultKey}>
+          從雲端載入
+        </button>
+        <button className="btn btn--quiet" type="button" onClick={onPush} disabled={isCloudLoading || !vaultKey}>
+          上傳本機
+        </button>
+      </div>
+    </section>
   );
 }
 

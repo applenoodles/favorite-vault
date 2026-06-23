@@ -202,6 +202,54 @@ button:disabled {
 }
 
 /* ---------- Profile Card ---------- */
+.cloud-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(280px, 1.6fr);
+  gap: var(--sp-4);
+  align-items: center;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  box-shadow: var(--shadow-soft);
+  margin-bottom: var(--sp-5);
+}
+
+.cloud-card__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cloud-card__eyebrow {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+
+.cloud-card__copy strong {
+  color: var(--ink);
+}
+
+.cloud-card__copy p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+
+.cloud-card__controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto auto;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.cloud-card__input {
+  min-width: 0;
+}
+
 .profile-card {
   background: var(--bg-raised);
   border: 1px solid var(--line);
@@ -1143,6 +1191,14 @@ label:focus-visible {
   .app-header__actions .btn {
     flex: 1;
     min-height: 46px;
+  }
+
+  .cloud-card {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-card__controls {
+    grid-template-columns: 1fr;
   }
 
   .toolbar {
