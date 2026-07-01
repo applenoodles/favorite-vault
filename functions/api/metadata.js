@@ -205,6 +205,11 @@ function extractMetadata(html, baseUrl) {
   };
 }
 
+function isYouTubeUrl(url) {
+  const host = url.hostname.toLowerCase();
+  return host.includes('youtube.com') || host.includes('youtu.be');
+}
+
 function isBilibiliUrl(url) {
   const host = url.hostname.toLowerCase();
   return host.includes('bilibili.com') || host.includes('b23.tv');
@@ -216,9 +221,42 @@ function isMetaUrl(url) {
 }
 
 async function extractPlatformDataFromUrl(url) {
-  const host = url.hostname.toLowerCase();
-  if (!host.includes('bilibili.com')) return null;
+  if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
+  if (isBilibiliUrl(url)) return extractBilibiliApiData(url);
+  return null;
+}
 
+async function extractYouTubeOEmbedData(url) {
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url.toString())}&format=json`, {
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'Mozilla/5.0 (compatible; FavoriteVaultBot/0.3; +https://lting.dpdns.org)',
+      },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const title = cleanText(payload.title || filenameFromUrl(url.toString()));
+    const author = cleanText(payload.author_name || '');
+    const image = absolutize(payload.thumbnail_url || '', url.toString());
+    const contentText = cleanReadableText([title, author && `作者：${author}`].filter(Boolean).join('\n'));
+
+    return makeExtracted({
+      title,
+      description: '',
+      image,
+      siteName: 'YouTube',
+      author,
+      contentText,
+      extractionMethod: 'youtube_oembed',
+      canonicalUrl: url.toString(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function extractBilibiliApiData(url) {
   const bvid = extractBvid(url.toString());
   if (!bvid) return null;
 
@@ -272,6 +310,34 @@ function extractYouTubeData(html, baseUrl) {
     });
   } catch {
     return null;
+  }
+}
+
+function buildYouTubeFallbackExtract(url) {
+  const videoId = extractYouTubeVideoId(url.toString());
+  const title = videoId ? `YouTube 影片 ${videoId}` : filenameFromUrl(url.toString());
+  const image = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '';
+  const contentText = cleanReadableText(title);
+
+  return makeExtracted({
+    title,
+    description: '',
+    image,
+    siteName: 'YouTube',
+    author: '',
+    contentText,
+    extractionMethod: 'youtube_url_fallback',
+    canonicalUrl: url.toString(),
+  });
+}
+
+function extractYouTubeVideoId(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname.toLowerCase().includes('youtu.be')) return url.pathname.split('/').filter(Boolean)[0] || '';
+    return url.searchParams.get('v') || url.pathname.match(/\/shorts\/([^/?#]+)/)?.[1] || url.pathname.match(/\/embed\/([^/?#]+)/)?.[1] || '';
+  } catch {
+    return '';
   }
 }
 
