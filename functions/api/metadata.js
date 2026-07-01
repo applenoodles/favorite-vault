@@ -230,7 +230,7 @@ function isMetaUrl(url) {
 
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
-  if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || buildBilibiliFallbackExtract(url);
+  if (isBilibiliUrl(url)) return buildBilibiliFallbackExtract(url);
   return null;
 }
 
