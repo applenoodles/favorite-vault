@@ -1,6 +1,7 @@
 const MAX_BYTES = 1_600_000;
 const MAX_CONTENT_CHARS = 24_000;
 const FETCH_TIMEOUT_MS = 10_000;
+const PLATFORM_API_TIMEOUT_MS = 3_000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -230,7 +231,7 @@ function isMetaUrl(url) {
 
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
-  if (isBilibiliUrl(url)) return buildBilibiliFallbackExtract(url);
+  if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || buildBilibiliFallbackExtract(url);
   return null;
 }
 
@@ -268,8 +269,12 @@ async function extractBilibiliApiData(url) {
   const bvid = extractBvid(url.toString());
   if (!bvid) return null;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PLATFORM_API_TIMEOUT_MS);
+
   try {
     const response = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+      signal: controller.signal,
       headers: {
         accept: 'application/json',
         referer: 'https://www.bilibili.com/',
@@ -282,6 +287,8 @@ async function extractBilibiliApiData(url) {
     return buildBilibiliExtract(payload.data, url.toString(), 'bilibili_view_api');
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
