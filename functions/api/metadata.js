@@ -13,6 +13,14 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestGet({ request }) {
+  try {
+    return await handleMetadataRequest(request);
+  } catch (error) {
+    return json({ ok: false, error: 'server_error', message: errorMessage(error) }, 500);
+  }
+}
+
+async function handleMetadataRequest(request) {
   const requestUrl = new URL(request.url);
   const targetUrl = requestUrl.searchParams.get('url');
 
@@ -222,7 +230,7 @@ function isMetaUrl(url) {
 
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
-  if (isBilibiliUrl(url)) return extractBilibiliApiData(url);
+  if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || buildBilibiliFallbackExtract(url);
   return null;
 }
 
@@ -380,6 +388,24 @@ function buildBilibiliExtract(video, baseUrl, method) {
     contentText,
     extractionMethod: method,
     canonicalUrl: baseUrl,
+  });
+}
+
+function buildBilibiliFallbackExtract(url) {
+  const bvid = extractBvid(url.toString());
+  const title = bvid ? `Bilibili 影片 ${bvid}` : filenameFromUrl(url.toString());
+  const image = bvid ? `https://archive.biliimg.com/bfs/archive/${bvid}.jpg` : '';
+  const contentText = cleanReadableText(title);
+
+  return makeExtracted({
+    title,
+    description: '',
+    image: '',
+    siteName: 'Bilibili',
+    author: '',
+    contentText,
+    extractionMethod: 'bilibili_url_fallback',
+    canonicalUrl: url.toString(),
   });
 }
 
@@ -640,6 +666,10 @@ function hostFromUrl(raw) {
   } catch {
     return '';
   }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function escapeRegExp(value) {
