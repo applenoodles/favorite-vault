@@ -70,7 +70,21 @@ async function handleMetadataRequest(request) {
     const contentType = response.headers.get('content-type') || '';
     const finalUrl = response.url || validation.url.toString();
 
-    if (!response.ok) return json({ ok: false, error: 'fetch_failed', status: response.status, finalUrl }, 502);
+    if (!response.ok) {
+      const proxyData = await extractReadableProxyData(validation.url);
+      if (proxyData) {
+        return json({
+          ok: true,
+          inputUrl: validation.url.toString(),
+          finalUrl: validation.url.toString(),
+          status: 200,
+          contentType: 'text/plain; proxy=jina',
+          limited: false,
+          ...proxyData,
+        });
+      }
+      return json({ ok: false, error: 'fetch_failed', status: response.status, finalUrl }, 502);
+    }
 
     if (!isProbablyHtml(contentType)) {
       return json({
@@ -110,6 +124,19 @@ async function handleMetadataRequest(request) {
       ...extracted,
     });
   } catch (error) {
+    const proxyData = await extractReadableProxyData(validation.url);
+    if (proxyData) {
+      return json({
+        ok: true,
+        inputUrl: validation.url.toString(),
+        finalUrl: validation.url.toString(),
+        status: 200,
+        contentType: 'text/plain; proxy=jina',
+        limited: false,
+        ...proxyData,
+      });
+    }
+
     const message = error?.name === 'AbortError' ? 'timeout' : 'fetch_error';
     return json({ ok: false, error: message }, 504);
   } finally {
@@ -340,6 +367,72 @@ function buildBilibiliJinaExtract(markdown, baseUrl) {
     extractionMethod: 'bilibili_jina_reader',
     canonicalUrl: baseUrl,
   });
+}
+
+async function extractReadableProxyData(url) {
+  if (isMetaUrl(url) || isBilibiliUrl(url) || isYouTubeUrl(url)) return null;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), READABILITY_PROXY_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`https://r.jina.ai/http://${url.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        accept: 'text/plain',
+        'user-agent': 'Mozilla/5.0 (compatible; FavoriteVaultBot/0.3; +https://lting.dpdns.org)',
+      },
+    });
+    if (!response.ok) return null;
+    const markdown = await response.text();
+    return buildReadableProxyExtract(markdown, url.toString());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function buildReadableProxyExtract(markdown, baseUrl) {
+  const title = cleanText(markdown.match(/^Title:\s*(.+)$/m)?.[1] || filenameFromUrl(baseUrl));
+  if (!title || isChallengeTitle(title)) return null;
+  if (/需要確認您的連線是安全的|captcha|enable javascript|just a moment/i.test(markdown)) return null;
+
+  const image = absolutize(markdown.match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/)?.[1] || '', baseUrl);
+  const publishedTime = cleanText(markdown.match(/^Published Time:\s*(.+)$/m)?.[1] || '');
+  const content = markdown.match(/Markdown Content:\s*\n([\s\S]*)$/)?.[1] || '';
+  const contentText = cleanReadableText(markdownToPlainText(content)).slice(0, MAX_CONTENT_CHARS);
+  const description = cleanText(firstMeaningfulParagraph(contentText));
+
+  return makeExtracted({
+    title,
+    description: publishedTime ? [description, `Published: ${publishedTime}`].filter(Boolean).join('\n') : description,
+    image,
+    siteName: hostFromUrl(baseUrl),
+    author: '',
+    contentText,
+    extractionMethod: 'jina_reader',
+    canonicalUrl: baseUrl,
+  });
+}
+
+function isChallengeTitle(title) {
+  return /^(just a moment|attention required|access denied|forbidden|post isn't available)/i.test(title.trim());
+}
+
+function markdownToPlainText(markdown) {
+  return String(markdown || '')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_>#-]+/g, ' ')
+    .replace(/\r/g, '\n');
+}
+
+function firstMeaningfulParagraph(text) {
+  return String(text || '')
+    .split(/\n{2,}|\n/)
+    .map((line) => cleanText(line))
+    .find((line) => line.length > 40) || '';
 }
 
 function extractPlatformData(html, baseUrl) {
