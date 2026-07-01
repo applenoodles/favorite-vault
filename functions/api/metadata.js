@@ -48,7 +48,7 @@ async function handleMetadataRequest(request) {
     return json({ ok: false, error: 'platform_fetch_failed', platform: 'bilibili' }, 502);
   }
 
-  if (isMetaUrl(validation.url)) {
+  if (isMetaUrl(validation.url) || isDcardUrl(validation.url)) {
     return json({ ok: false, error: 'platform_login_wall', platform: hostFromUrl(validation.url.toString()) }, 403);
   }
 
@@ -257,6 +257,11 @@ function isMetaUrl(url) {
   return host.includes('instagram.com') || host.includes('threads.net') || host.includes('threads.com') || host.includes('facebook.com') || host.includes('fb.watch');
 }
 
+function isDcardUrl(url) {
+  const host = url.hostname.toLowerCase();
+  return host.includes('dcard.tw');
+}
+
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
   if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || (await extractBilibiliJinaData(url)) || buildBilibiliFallbackExtract(url);
@@ -370,7 +375,7 @@ function buildBilibiliJinaExtract(markdown, baseUrl) {
 }
 
 async function extractReadableProxyData(url) {
-  if (isMetaUrl(url) || isBilibiliUrl(url) || isYouTubeUrl(url)) return null;
+  if (isMetaUrl(url) || isDcardUrl(url) || isBilibiliUrl(url) || isYouTubeUrl(url)) return null;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), READABILITY_PROXY_TIMEOUT_MS);
