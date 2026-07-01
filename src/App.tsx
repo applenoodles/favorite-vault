@@ -307,7 +307,21 @@ export default function App() {
         metadataError: '',
       }));
     } catch (error) {
-      setDraft((current) => ({ ...current, metadataError: metadataErrorText((error as Error).message) }));
+      setDraft((current) => {
+        const platform = detectPlatform(normalizedUrl);
+        const fallbackText = [current.title, current.rawText, normalizedUrl].filter(Boolean).join('\n');
+        const fallbackSummary = current.summary || generateSummary(fallbackText, current.title || normalizedUrl);
+
+        return {
+          ...current,
+          title: current.title.trim() ? current.title : deriveItemTitle('', normalizedUrl, fallbackSummary, current.description),
+          siteName: current.siteName || hostOf(normalizedUrl),
+          summary: fallbackSummary,
+          category: current.category || inferCategory(fallbackText, platform),
+          tags: current.tags || suggestTags(fallbackText, platform).join(' '),
+          metadataError: metadataErrorText((error as Error).message),
+        };
+      });
     } finally {
       setIsMetadataLoading(false);
     }

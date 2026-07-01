@@ -48,9 +48,6 @@ async function handleMetadataRequest(request) {
     return json({ ok: false, error: 'platform_fetch_failed', platform: 'bilibili' }, 502);
   }
 
-  if (isMetaUrl(validation.url) || isDcardUrl(validation.url)) {
-    return json({ ok: false, error: 'platform_login_wall', platform: hostFromUrl(validation.url.toString()) }, 403);
-  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -265,7 +262,52 @@ function isDcardUrl(url) {
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
   if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || (await extractBilibiliJinaData(url)) || buildBilibiliFallbackExtract(url);
+  if (isMetaUrl(url)) return buildMetaUrlExtract(url);
+  if (isDcardUrl(url)) return buildDcardUrlExtract(url);
   return null;
+}
+
+function buildMetaUrlExtract(url) {
+  const host = url.hostname.toLowerCase();
+  const platform = host.includes('threads') ? 'Threads' : host.includes('instagram') ? 'Instagram' : 'Facebook';
+  const parts = url.pathname.split('/').filter(Boolean);
+  const handle = parts.find((part) => part.startsWith('@')) || '';
+  const postId = parts.find((part, index) => ['p', 'reel', 'post', 'posts'].includes(parts[index - 1])) || '';
+  const descriptor = [handle, postId && `#${postId}`].filter(Boolean).join(' ');
+  const title = descriptor ? `${platform} 貼文 ${descriptor}` : `${platform} 連結`;
+  const contentText = cleanReadableText([title, url.toString()].join('\n'));
+
+  return makeExtracted({
+    title,
+    description: '此平台限制伺服器解析；已保留可整理的連結資訊。若需要內文，請用手機分享文字或瀏覽器外掛擷取。',
+    image: '',
+    siteName: platform,
+    author: handle.replace(/^@/, ''),
+    contentText,
+    extractionMethod: 'platform_url_fallback',
+    canonicalUrl: url.toString(),
+  });
+}
+
+function buildDcardUrlExtract(url) {
+  const parts = url.pathname.split('/').filter(Boolean);
+  const forum = parts[1] || '';
+  const postIndex = parts.findIndex((part) => part === 'p');
+  const postId = postIndex >= 0 ? parts[postIndex + 1] || '' : '';
+  const slug = postId ? decodeURIComponent(postId).replace(/^\d+-?/, '').replace(/[-_]+/g, ' ').trim() : '';
+  const title = slug || (forum ? `Dcard ${forum} 看板` : 'Dcard 連結');
+  const contentText = cleanReadableText([title, forum && `看板：${forum}`, url.toString()].filter(Boolean).join('\n'));
+
+  return makeExtracted({
+    title,
+    description: 'Dcard 對伺服器解析有真人驗證；已保留可整理的連結資訊。',
+    image: '',
+    siteName: 'Dcard',
+    author: '',
+    contentText,
+    extractionMethod: 'dcard_url_fallback',
+    canonicalUrl: url.toString(),
+  });
 }
 
 async function extractYouTubeOEmbedData(url) {
