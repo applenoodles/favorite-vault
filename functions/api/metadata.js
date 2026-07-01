@@ -2,6 +2,7 @@ const MAX_BYTES = 1_600_000;
 const MAX_CONTENT_CHARS = 24_000;
 const FETCH_TIMEOUT_MS = 10_000;
 const PLATFORM_API_TIMEOUT_MS = 3_000;
+const READABILITY_PROXY_TIMEOUT_MS = 8_000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -231,7 +232,7 @@ function isMetaUrl(url) {
 
 async function extractPlatformDataFromUrl(url) {
   if (isYouTubeUrl(url)) return (await extractYouTubeOEmbedData(url)) || buildYouTubeFallbackExtract(url);
-  if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || buildBilibiliFallbackExtract(url);
+  if (isBilibiliUrl(url)) return (await extractBilibiliApiData(url)) || (await extractBilibiliJinaData(url)) || buildBilibiliFallbackExtract(url);
   return null;
 }
 
@@ -290,6 +291,55 @@ async function extractBilibiliApiData(url) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function extractBilibiliJinaData(url) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), READABILITY_PROXY_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`https://r.jina.ai/http://${url.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        accept: 'text/plain',
+        'user-agent': 'Mozilla/5.0 (compatible; FavoriteVaultBot/0.3; +https://lting.dpdns.org)',
+      },
+    });
+    if (!response.ok) return null;
+    const markdown = await response.text();
+    return buildBilibiliJinaExtract(markdown, url.toString());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function buildBilibiliJinaExtract(markdown, baseUrl) {
+  const title = cleanText(markdown.match(/^Title:\s*(.+)$/m)?.[1] || '').replace(/_哔哩哔哩_bilibili$/i, '');
+  if (!title || /^出错啦/.test(title)) return null;
+
+  const image = absolutize(markdown.match(/!\[[^\]]*\]\((https?:\/\/[^)]+bfs\/archive\/[^)]+)\)/)?.[1] || '', baseUrl);
+  const author = cleanText(
+    markdown.match(/\n\[([^\]\n]+)\]\(https:\/\/space\.bilibili\.com\/\d+\/\?spm_id_from=333\.788\.upinfo\.detail\.click/)?.[1] ||
+      markdown.match(/\n\[([^\]\n]+)\]\(https:\/\/space\.bilibili\.com\/\d+\//)?.[1] ||
+      '',
+  );
+  const description = cleanText(markdown.match(/稍后再看\s*\n\s*([\s\S]*?)\n\s*展开更多/)?.[1] || '');
+  const tags = Array.from(markdown.matchAll(/\[([^\]\n]{1,32})\]\(https:\/\/search\.bilibili\.com\/all\?keyword=/g)).map((match) => match[1]);
+  const stats = markdown.match(/# .+?\n\n([\s\S]{0,120})\n\n\d{4}-\d{2}-\d{2}/)?.[1] || '';
+  const contentText = cleanReadableText([title, author && `作者：${author}`, description, tags.length && `標籤：${tags.join('、')}`, cleanText(stats)].filter(Boolean).join('\n'));
+
+  return makeExtracted({
+    title,
+    description,
+    image,
+    siteName: 'Bilibili',
+    author,
+    contentText,
+    extractionMethod: 'bilibili_jina_reader',
+    canonicalUrl: baseUrl,
+  });
 }
 
 function extractPlatformData(html, baseUrl) {
